@@ -1,0 +1,44 @@
+services:
+  apisix-etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    container_name: apisix-etcd
+    restart: unless-stopped
+    command:
+      - /usr/local/bin/etcd
+      - --name=apisix-etcd
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://apisix-etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://apisix-etcd:2380
+      - --initial-cluster=apisix-etcd=http://apisix-etcd:2380
+      - --initial-cluster-token=apisix-local
+      - --initial-cluster-state=new
+    volumes:
+      - apisix-etcd-data:/etcd-data
+    networks:
+      - apisix
+
+  apisix:
+    image: apache/apisix:latest
+    container_name: apisix-gateway
+    restart: unless-stopped
+    depends_on:
+      - apisix-etcd
+    ports:
+      # Replaces LiteLLM's old local OpenAI-compatible endpoint.
+      - "127.0.0.1:4000:9080"
+      # Admin API is local-only; scripts use the generated key in conf/admin.key.
+      - "127.0.0.1:9180:9180"
+    volumes:
+      - ./conf/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+    networks:
+      - apisix
+
+networks:
+  apisix:
+    name: apisix-local
+
+volumes:
+  apisix-etcd-data:
+    name: apisix-etcd-data

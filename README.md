@@ -12,8 +12,8 @@ This repository is intentionally **not** a fork of `apache/apisix`; it only cont
 - OpenAI-compatible routes:
   - `GET /v1/models`
   - `POST /v1/chat/completions`
-  - `GET /siliconflow-cn/v1/models`
-  - `POST /siliconflow-cn/v1/chat/completions`
+
+All model traffic uses the same pool abstraction. A single-backend model is still configured as a one-instance `ai-proxy-multi` pool, so load balancing, fallback, capability checks, and logging stay on one path as the gateway grows. There is no separate SiliconFlow provider surface; SiliconFlow-backed models are selected by their public model IDs on the unified `/v1` endpoint.
 
 This is not a LiteLLM compatibility layer. LiteLLM-specific endpoints `/v1/model/info` and `/model/info` should remain absent and return 404.
 

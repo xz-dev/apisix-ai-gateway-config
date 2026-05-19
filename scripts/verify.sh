@@ -6,7 +6,7 @@ ADMIN_KEY="$(tr -d '\r\n' < "$ROOT/conf/admin.key")"
 
 echo '--- APISIX Admin API model routes ---'
 ROUTES_TMP="$(mktemp)"
-trap 'rm -f "${ROUTES_TMP:-}" "${TMP:-}"' EXIT
+trap 'rm -f "${ROUTES_TMP:-}" "${TMP:-}" "${TMP2:-}"' EXIT
 curl -fsS http://127.0.0.1:9180/apisix/admin/routes \
   -H "X-API-KEY: $ADMIN_KEY" > "$ROUTES_TMP"
 python - "$ROUTES_TMP" <<'PY'
@@ -17,21 +17,39 @@ summary = []
 for item in routes:
     value = item.get('value') or item
     plugins = value.get('plugins') or {}
-    if 'ai-proxy' in plugins or 'ai-proxy-multi' in plugins or value.get('uri', '').endswith('/models'):
+    if 'ai-proxy' in plugins:
+        raise SystemExit(f"direct ai-proxy route violates unified pool routing: {value.get('id')}")
+    if 'ai-proxy-multi' in plugins or value.get('uri') == '/v1/models':
         summary.append({
             'id': value.get('id'),
             'name': value.get('name'),
             'uri': value.get('uri'),
+            'vars': value.get('vars'),
             'plugins': sorted(plugins),
         })
+ids = {r['id'] for r in summary}
+required = {'pool-ollama-glm-5-1', 'pool-siliconflow-qwen-vision', 'main-models'}
+missing = required.difference(ids)
+if missing:
+    raise SystemExit(f'missing required pool routes: {sorted(missing)}')
+for forbidden in {'main-chat', 'vision-chat', 'vision-models'}:
+    if forbidden in ids:
+        raise SystemExit(f'historical split route still present: {forbidden}')
 print(json.dumps(summary, ensure_ascii=False, indent=2))
 PY
 
 echo '--- /v1/models ---'
 curl -fsS http://127.0.0.1:4000/v1/models | python -m json.tool
 
-echo '--- /siliconflow-cn/v1/models ---'
-curl -fsS http://127.0.0.1:4000/siliconflow-cn/v1/models | python -m json.tool
+echo '--- split-provider surfaces must be absent ---'
+for path in /siliconflow-cn/v1/models /siliconflow-cn/v1/chat/completions; do
+  status="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:4000${path}")"
+  echo "${path}: HTTP ${status}"
+  if [[ "$status" != "404" && "$status" != "405" ]]; then
+    echo "expected ${path} to be absent from the unified provider surface" >&2
+    exit 1
+  fi
+done
 
 echo '--- LiteLLM-specific metadata shims must be absent ---'
 for path in /v1/model/info /model/info; do
@@ -57,7 +75,7 @@ if missing:
 PY
 )
 
-echo '--- /v1/chat/completions semantic check ---'
+echo '--- /v1/chat/completions semantic check: ollama pool ---'
 TMP="$(mktemp)"
 curl -fsS http://127.0.0.1:4000/v1/chat/completions \
   -H 'Content-Type: application/json' \
@@ -77,5 +95,27 @@ summary = {
 }
 print(json.dumps(summary, ensure_ascii=False, indent=2))
 if content != 'APISIX_OK' or choice.get('finish_reason') != 'stop':
-    raise SystemExit('chat completion semantic check failed')
+    raise SystemExit('ollama pool semantic check failed')
+PY
+
+echo '--- /v1/chat/completions semantic check: vision pool through unified provider ---'
+TMP2="$(mktemp)"
+curl -fsS http://127.0.0.1:4000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"siliconflow-cn/Qwen/Qwen3.6-35B-A3B","messages":[{"role":"user","content":"Reply with exactly VISION_POOL_OK and no other text."}],"temperature":0,"max_tokens":512}' > "$TMP2"
+python - "$TMP2" <<'PY'
+import json, sys
+j = json.load(open(sys.argv[1]))
+choice = (j.get('choices') or [{}])[0]
+msg = choice.get('message') or {}
+content = (msg.get('content') or '').strip()
+summary = {
+    'model': j.get('model'),
+    'finish_reason': choice.get('finish_reason'),
+    'content': content,
+    'usage': j.get('usage'),
+}
+print(json.dumps(summary, ensure_ascii=False, indent=2))
+if content != 'VISION_POOL_OK' or choice.get('finish_reason') != 'stop':
+    raise SystemExit('vision pool semantic check failed')
 PY

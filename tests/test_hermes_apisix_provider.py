@@ -1,10 +1,12 @@
 """Regression tests for the local Hermes APISIX ProviderProfile.
 
 The desired design is:
-1. APISIX routing state is discovered from the APISIX Admin API, not from a
-   LiteLLM-compatible /v1/model/info mock.
-2. reasoning_effort capability is resolved from upstream provider APIs first.
-3. The local capability registry is only a fallback when upstream metadata is
+1. Model discovery uses the gateway's unified OpenAI-compatible /v1/models
+   catalog first, with Admin API pool-route introspection only as a fallback.
+2. Every public model id maps to an ai-proxy-multi pool, even when that pool has
+   a single outbound instance.
+3. reasoning_effort capability is resolved from upstream provider APIs first.
+4. The local capability registry is only a fallback when upstream metadata is
    unavailable or incomplete.
 """
 
@@ -29,7 +31,7 @@ def apisix_profile():
     return profile
 
 
-def test_apisix_profile_fetches_models_from_admin_routes(apisix_profile):
+def test_apisix_profile_fetches_models_from_unified_gateway_catalog(apisix_profile):
     models = apisix_profile.fetch_models(api_key="unused-local-apisix", timeout=5.0)
 
     assert models is not None

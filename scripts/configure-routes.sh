@@ -52,104 +52,127 @@ trap 'rm -rf "$TMPDIR"' EXIT
 python - <<'PY' "$TMPDIR" "$OLLAMA_CLOUD_KEY_1" "${OLLAMA_CLOUD_KEY_2:-}" "$SILICONFLOW_CN_API_KEY"
 import json, sys
 from pathlib import Path
-out=Path(sys.argv[1])
+out = Path(sys.argv[1])
 ollama1, ollama2, sf = sys.argv[2], sys.argv[3], sys.argv[4]
 
 def dump(name, obj):
-    (out/name).write_text(json.dumps(obj, separators=(",", ":")))
+    (out / name).write_text(json.dumps(obj, separators=(",", ":")))
 
-ollama_instances=[{
-    "name":"ollama-cloud-1",
-    "provider":"openai-compatible",
-    "weight":1,
-    "auth":{"header":{"Authorization":"Bearer "+ollama1}},
-    "options":{"model":"glm-5.1"},
-    "override":{"endpoint":"https://ollama.com/v1/chat/completions"}
+def pool_route(route_id, name, public_model, instances, priority):
+    return {
+        "id": route_id,
+        "name": name,
+        "uri": "/v1/chat/completions",
+        "methods": ["POST"],
+        "priority": priority,
+        # One function, one path: every model is selected by the request body's
+        # public model id and then routed through an ai-proxy-multi pool. A
+        # single-provider/single-key case is still represented as a one-instance
+        # pool so LB/fallback/health/capability logic stays unified.
+        "vars": [["post_arg.model", "==", public_model]],
+        "plugins": {
+            "ai-proxy-multi": {
+                "instances": instances,
+                "balancer": {"algorithm": "roundrobin"},
+                "fallback_strategy": ["http_429", "http_5xx"],
+                "timeout": 600000,
+                "ssl_verify": True,
+                "keepalive": True,
+                "keepalive_timeout": 60000,
+                "keepalive_pool": 30,
+            }
+        },
+    }
+
+ollama_instances = [{
+    "name": "ollama-cloud-1",
+    "provider": "openai-compatible",
+    "weight": 1,
+    "auth": {"header": {"Authorization": "Bearer " + ollama1}},
+    "options": {"model": "glm-5.1"},
+    "override": {"endpoint": "https://ollama.com/v1/chat/completions"},
 }]
 if ollama2:
     ollama_instances.append({
-        "name":"ollama-cloud-2",
-        "provider":"openai-compatible",
-        "weight":1,
-        "auth":{"header":{"Authorization":"Bearer "+ollama2}},
-        "options":{"model":"glm-5.1"},
-        "override":{"endpoint":"https://ollama.com/v1/chat/completions"}
+        "name": "ollama-cloud-2",
+        "provider": "openai-compatible",
+        "weight": 1,
+        "auth": {"header": {"Authorization": "Bearer " + ollama2}},
+        "options": {"model": "glm-5.1"},
+        "override": {"endpoint": "https://ollama.com/v1/chat/completions"},
     })
 
-dump('route-main-chat.json', {
-    "id":"main-chat",
-    "name":"OpenAI-compatible chat -> Ollama Cloud GLM-5.1",
-    "uri":"/v1/chat/completions",
-    "methods":["POST"],
-    "plugins":{
-        "ai-proxy-multi":{
-            "instances":ollama_instances,
-            "balancer":{"algorithm":"roundrobin"},
-            "fallback_strategy":["http_429","http_5xx"],
-            "timeout":600000,
-            "ssl_verify":True,
-            "keepalive":True,
-            "keepalive_timeout":60000,
-            "keepalive_pool":30
-        }
-    }
-})
+vision_instances = [{
+    "name": "siliconflow-cn-qwen-vision-1",
+    "provider": "openai-compatible",
+    "weight": 1,
+    "auth": {"header": {"Authorization": "Bearer " + sf}},
+    "options": {"model": "Qwen/Qwen3.6-35B-A3B"},
+    "override": {"endpoint": "https://api.siliconflow.cn/v1/chat/completions"},
+}]
 
-dump('route-vision-chat.json', {
-    "id":"vision-chat",
-    "name":"OpenAI-compatible chat -> SiliconFlow Qwen vision",
-    "uri":"/siliconflow-cn/v1/chat/completions",
-    "methods":["POST"],
-    "plugins":{
-        "ai-proxy":{
-            "provider":"openai-compatible",
-            "auth":{"header":{"Authorization":"Bearer "+sf}},
-            "options":{"model":"Qwen/Qwen3.6-35B-A3B"},
-            "override":{"endpoint":"https://api.siliconflow.cn/v1/chat/completions"},
-            "timeout":600000,
-            "ssl_verify":True,
-            "keepalive":True,
-            "keepalive_timeout":60000,
-            "keepalive_pool":30
-        }
-    }
-})
+pools = [
+    {
+        "id": "pool-ollama-glm-5-1",
+        "public_model": "ollama/glm-5.1",
+        "owned_by": "apisix-ollama-cloud",
+        "route_name": "APISIX pool -> Ollama Cloud GLM-5.1",
+        "instances": ollama_instances,
+        "priority": 100,
+    },
+    {
+        "id": "pool-siliconflow-qwen-vision",
+        "public_model": "siliconflow-cn/Qwen/Qwen3.6-35B-A3B",
+        "owned_by": "siliconflow-cn",
+        "route_name": "APISIX pool -> SiliconFlow Qwen vision",
+        "instances": vision_instances,
+        "priority": 100,
+    },
+]
 
-dump('route-main-models.json', {
-    "id":"main-models",
-    "name":"OpenAI-compatible model list for main APISIX endpoint",
-    "uri":"/v1/models",
-    "methods":["GET"],
-    "plugins":{"mocking":{
-        "content_type":"application/json",
-        "response_status":200,
-        "with_mock_header":False,
-        "response_example":json.dumps({"object":"list","data":[{"id":"ollama/glm-5.1","object":"model","owned_by":"apisix-ollama-cloud"}]})
-    }}
-})
+for pool in pools:
+    dump(
+        f"route-{pool['id']}.json",
+        pool_route(
+            pool["id"],
+            pool["route_name"],
+            pool["public_model"],
+            pool["instances"],
+            pool["priority"],
+        ),
+    )
 
-dump('route-vision-models.json', {
-    "id":"vision-models",
-    "name":"OpenAI-compatible model list for SiliconFlow APISIX endpoint",
-    "uri":"/siliconflow-cn/v1/models",
-    "methods":["GET"],
-    "plugins":{"mocking":{
-        "content_type":"application/json",
-        "response_status":200,
-        "with_mock_header":False,
-        "response_example":json.dumps({"object":"list","data":[{"id":"siliconflow-cn/Qwen/Qwen3.6-35B-A3B","object":"model","owned_by":"apisix-siliconflow"}]})
-    }}
+models_payload = {
+    "object": "list",
+    "data": [
+        {"id": pool["public_model"], "object": "model", "owned_by": pool["owned_by"]}
+        for pool in pools
+    ],
+}
+dump("route-main-models.json", {
+    "id": "main-models",
+    "name": "OpenAI-compatible model list generated from APISIX pools",
+    "uri": "/v1/models",
+    "methods": ["GET"],
+    "plugins": {"mocking": {
+        "content_type": "application/json",
+        "response_status": 200,
+        "with_mock_header": False,
+        "response_example": json.dumps(models_payload),
+    }},
 })
 PY
 
-api_put main-chat "$TMPDIR/route-main-chat.json"
-api_put vision-chat "$TMPDIR/route-vision-chat.json"
+api_put pool-ollama-glm-5-1 "$TMPDIR/route-pool-ollama-glm-5-1.json"
+api_put pool-siliconflow-qwen-vision "$TMPDIR/route-pool-siliconflow-qwen-vision.json"
 api_put main-models "$TMPDIR/route-main-models.json"
-api_put vision-models "$TMPDIR/route-vision-models.json"
 
-# This APISIX deployment is a clean AI gateway, not a LiteLLM compatibility layer.
-# Ensure any historical LiteLLM-specific metadata shim routes are absent.
+# Remove historical split-provider/direct-route surfaces. The clean gateway has
+# one OpenAI-compatible surface; every model request enters /v1 and resolves to a pool.
+api_delete main-chat || true
+api_delete vision-chat || true
+api_delete vision-models || true
 api_delete main-model-info-v1 || true
 api_delete main-model-info-root || true
 
-echo "APISIX AI gateway routes configured without LiteLLM compatibility shims."
+echo "APISIX AI gateway routes configured with unified pool routing and no LiteLLM shims."

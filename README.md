@@ -13,7 +13,14 @@ This repository is intentionally **not** a fork of `apache/apisix`; it only cont
   - `GET /v1/models`
   - `POST /v1/chat/completions`
 
-All model traffic uses the same pool abstraction. A single-backend model is still configured as a one-instance `ai-proxy-multi` pool, so load balancing, fallback, capability checks, and logging stay on one path as the gateway grows. There is no separate SiliconFlow provider surface; SiliconFlow-backed models are selected by their public model IDs on the unified `/v1` endpoint.
+All model traffic uses the same pool abstraction. `conf/model-pools.json` is the no-secret registry for migrated provider surfaces; `scripts/render-routes.py` expands it into explicit APISIX `ai-proxy-multi` routes because APISIX instances use static upstream `options.model`. A single-backend model is still configured as a one-instance pool, and multi-key/provider cases use same-priority round-robin plus 429/5xx retry fallback. There is no separate SiliconFlow provider surface; SiliconFlow-backed models are selected by their public model IDs on the unified `/v1` endpoint.
+
+Migrated LiteLLM surfaces:
+
+- `ollama/*` -> `ollama/<upstream-model>` through Ollama Cloud, with `OLLAMA_CLOUD_KEY_1` and optional `OLLAMA_CLOUD_KEY_2` as same-priority load-balanced instances.
+- `deepseek/*` -> `deepseek/<upstream-model>` through the official DeepSeek API.
+- `siliconflow-cn/*` -> `siliconflow-cn/<upstream-model>` through SiliconFlow CN; non-chat catalog entries such as embedding/reranker/image/audio models are filtered out of the chat catalog.
+- global `* -> xai/*` fallback -> explicit `xai/<upstream-model>` routes through the official xAI API with lower instance priority.
 
 This is not a LiteLLM compatibility layer. LiteLLM-specific endpoints `/v1/model/info` and `/model/info` should remain absent and return 404.
 
@@ -38,9 +45,13 @@ Edit `.env`:
 
 ```bash
 OLLAMA_CLOUD_KEY_1=replace-me
-# OLLAMA_CLOUD_KEY_2=replace-me   # optional
+OLLAMA_CLOUD_KEY_2=replace-me   # optional but recommended: same-priority LB/fallback
+DEEPSEEK_API_KEY=replace-me
+XAI_API_KEY=replace-me
 SILICONFLOW_CN_API_KEY=replace-me
 ```
+
+`configure-routes.sh` also sources the historical LiteLLM env file at `~/.config/litellm/litellm.env` first during migration, then overlays APISIX-local `.env`. Keep `.env` authoritative after migration.
 
 `conf/admin.key` must match `deployment.admin.admin_key[0].key` in `conf/config.yaml` unless you intentionally change both.
 

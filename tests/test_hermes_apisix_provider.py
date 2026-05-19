@@ -36,8 +36,11 @@ def test_apisix_profile_fetches_models_from_unified_gateway_catalog(apisix_profi
 
     assert models is not None
     assert "ollama/glm-5.1" in models
+    assert "deepseek/deepseek-v4-flash" in models
+    assert "deepseek/deepseek-v4-pro" in models
     assert "siliconflow-cn/Qwen/Qwen3.6-35B-A3B" in models
-    assert len(models) >= 2
+    assert "xai/grok-4.3" in models
+    assert len(models) >= 40
 
 
 def test_reasoning_effort_prefers_upstream_provider_api_over_fallback_table(monkeypatch, apisix_profile):

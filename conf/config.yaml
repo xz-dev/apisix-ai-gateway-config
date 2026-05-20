@@ -15,7 +15,6 @@ nginx_config:
     access_log: /dev/stdout
 
 plugins:
-  - real-ip
   - ai
   - mocking
   - ai-proxy-multi

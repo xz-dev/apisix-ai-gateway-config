@@ -3,7 +3,10 @@
   "description": "Managed public model pools for the local APISIX AI gateway. No secrets live here; env_var names are resolved by scripts/configure-routes.sh.",
   "router_settings": {
     "algorithm": "roundrobin",
-    "fallback_strategy": ["http_429", "http_5xx"],
+    "fallback_strategy": [
+      "http_429",
+      "http_5xx"
+    ],
     "timeout": 600000,
     "keepalive": true,
     "keepalive_timeout": 60000,
@@ -19,12 +22,20 @@
       "catalog_url": "https://ollama.com/v1/models",
       "chat_endpoint": "https://ollama.com/v1/chat/completions",
       "driver": "openai-compatible",
-      "env_vars": ["OLLAMA_CLOUD_KEY_1", "OLLAMA_CLOUD_KEY_2"],
-      "required_env_vars": ["OLLAMA_CLOUD_KEY_1"],
+      "env_vars": [
+        "OLLAMA_CLOUD_KEY_1",
+        "OLLAMA_CLOUD_KEY_2"
+      ],
+      "required_env_vars": [
+        "OLLAMA_CLOUD_KEY_1"
+      ],
       "instance_priority": 0,
       "instance_weight": 1,
-      "fallback_models": ["glm-5.1"],
-      "route_priority": 200
+      "fallback_models": [
+        "glm-5.1"
+      ],
+      "route_priority": 200,
+      "allow_catalog_fallback": true
     },
     {
       "id": "deepseek",
@@ -34,12 +45,20 @@
       "catalog_url": "https://api.deepseek.com/models",
       "chat_endpoint": "https://api.deepseek.com/chat/completions",
       "driver": "deepseek",
-      "env_vars": ["DEEPSEEK_API_KEY"],
-      "required_env_vars": ["DEEPSEEK_API_KEY"],
+      "env_vars": [
+        "DEEPSEEK_API_KEY"
+      ],
+      "required_env_vars": [
+        "DEEPSEEK_API_KEY"
+      ],
       "instance_priority": 0,
       "instance_weight": 1,
-      "fallback_models": ["deepseek-v4-flash", "deepseek-v4-pro"],
-      "route_priority": 190
+      "fallback_models": [
+        "deepseek-v4-flash",
+        "deepseek-v4-pro"
+      ],
+      "route_priority": 190,
+      "allow_catalog_fallback": true
     },
     {
       "id": "siliconflow-cn",
@@ -49,11 +68,17 @@
       "catalog_url": "https://api.siliconflow.cn/v1/models",
       "chat_endpoint": "https://api.siliconflow.cn/v1/chat/completions",
       "driver": "openai-compatible",
-      "env_vars": ["SILICONFLOW_CN_API_KEY"],
-      "required_env_vars": ["SILICONFLOW_CN_API_KEY"],
+      "env_vars": [
+        "SILICONFLOW_CN_API_KEY"
+      ],
+      "required_env_vars": [
+        "SILICONFLOW_CN_API_KEY"
+      ],
       "instance_priority": 0,
       "instance_weight": 1,
-      "fallback_models": ["Qwen/Qwen3.6-35B-A3B"],
+      "fallback_models": [
+        "Qwen/Qwen3.6-35B-A3B"
+      ],
       "exclude_model_patterns": [
         "(?i)(^|/|-)image($|-)",
         "(?i)(^|/)z-image",
@@ -65,7 +90,8 @@
         "(?i)wan2\\.",
         "(?i)ocr"
       ],
-      "route_priority": 180
+      "route_priority": 180,
+      "allow_catalog_fallback": true
     },
     {
       "id": "xai",
@@ -75,13 +101,22 @@
       "catalog_url": "https://api.x.ai/v1/models",
       "chat_endpoint": "https://api.x.ai/v1/chat/completions",
       "driver": "openai-compatible",
-      "env_vars": ["XAI_API_KEY"],
-      "required_env_vars": ["XAI_API_KEY"],
+      "env_vars": [
+        "XAI_API_KEY"
+      ],
+      "required_env_vars": [
+        "XAI_API_KEY"
+      ],
       "instance_priority": 10,
       "instance_weight": 1,
-      "fallback_models": ["grok-4.3"],
-      "exclude_model_patterns": ["(?i)imagine|image|video"],
-      "route_priority": 100
+      "fallback_models": [
+        "grok-4.3"
+      ],
+      "exclude_model_patterns": [
+        "(?i)imagine|image|video"
+      ],
+      "route_priority": 100,
+      "allow_catalog_fallback": true
     }
   ]
 }

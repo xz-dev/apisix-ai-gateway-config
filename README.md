@@ -16,7 +16,7 @@ This repository is intentionally **not** a fork of `apache/apisix`; it only cont
 
 ## Architecture
 
-All model traffic uses the same pool abstraction. `conf/model-pools.json` is the no-secret registry for public model pools; `scripts/render-routes.py` expands it into explicit APISIX `ai-proxy-multi` routes because APISIX instances use static upstream `options.model`.
+All model traffic uses the same pool abstraction. `conf/model-pools.json` is the no-secret registry for public model pools; `scripts/render-routes.py` expands it into explicit APISIX `ai-proxy-multi` routes because APISIX instances use static upstream `options.model`. `scripts/deploy-routes.py` is the deployment pipeline that renders desired routes, applies them through the APISIX Admin API, and removes stale repo-managed routes.
 
 A single-backend model is still configured as a one-instance pool. Multi-key and fallback-provider cases use explicit instance `weight`, `priority`, and gateway-level `fallback_strategy` settings. Provider-backed models are selected by public model IDs on the unified `/v1` endpoint; there are no provider-specific client URL prefixes.
 
@@ -78,7 +78,7 @@ docker compose up -d
 
 ## Verify
 
-`./scripts/verify.sh` checks local gateway state:
+`./scripts/verify.sh` checks local gateway state only:
 
 - APISIX Admin API managed routes
 - generated `GET /v1/models` catalog
@@ -86,6 +86,8 @@ docker compose up -d
 - absence of direct `ai-proxy` route bypasses
 - absence of unsupported metadata endpoints
 - absence of provider-specific client URL prefixes
+
+`./scripts/verify-integration.sh` is intentionally separate. It checks Hermes ProviderProfile discovery and real provider semantic calls, so it requires the Hermes plugin, local Hermes environment, provider API keys, and upstream model availability.
 
 ## Hermes ProviderProfile plugin
 

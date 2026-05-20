@@ -62,7 +62,8 @@ Each provider entry describes one upstream provider/catalog and how to expose it
 | `owned_by` | string | yes | Value used in generated `/v1/models` entries. This is client-facing catalog metadata only. |
 | `public_prefix` | string | yes | Prefix prepended to upstream model IDs to form public model IDs. Example: `ollama/` + `glm-5.1` -> `ollama/glm-5.1`. |
 | `upstream_prefix` | string | no | Prefix prepended to upstream model IDs before sending to the provider. Keep explicit as `""` when upstream uses raw catalog IDs. |
-| `catalog_url` | string | no | Provider model catalog endpoint. If fetch fails or is absent, `fallback_models` is used. |
+| `catalog_url` | string | no | Provider model catalog endpoint. If absent, `fallback_models` is used. If present and fetch fails, fallback is allowed only when `allow_catalog_fallback` is explicitly `true`. |
+| `allow_catalog_fallback` | boolean | no | Explicit opt-in for using `fallback_models` after a catalog fetch failure. Defaults to `false` so catalog failures fail fast. |
 | `chat_endpoint` | string | yes | Provider chat completions endpoint used as `instances[].override.endpoint`. |
 | `driver` | string | yes | APISIX AI provider driver for generated instances. Examples: `openai-compatible`, `deepseek`. |
 | `env_vars` | array of strings | yes | Ordered API key environment variable names. Each present env var creates one upstream instance. Multiple values create load-balanced/fallback-capable instances. |
@@ -121,6 +122,7 @@ Important invariants:
   "instance_priority": 0,
   "instance_weight": 1,
   "fallback_models": ["glm-5.1"],
+  "allow_catalog_fallback": true,
   "route_priority": 200
 }
 ```
@@ -143,6 +145,7 @@ If both keys are present, the renderer creates two instances with priority `0` a
   "instance_priority": 10,
   "instance_weight": 1,
   "fallback_models": ["grok-4.3"],
+  "allow_catalog_fallback": true,
   "exclude_model_patterns": ["(?i)imagine|image|video"],
   "route_priority": 100
 }

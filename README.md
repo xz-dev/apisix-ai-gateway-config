@@ -33,7 +33,7 @@ Capability metadata is exposed through APISIX's own `GET /v1/model-capabilities`
 
 - `conf/config.yaml` — APISIX runtime config and enabled plugin list.
 - `conf/model-pools.json` — no-secret model pool registry used by `scripts/render-routes.py`.
-- `conf/model-capabilities.json` — final capability registry rendered into `GET /v1/model-capabilities`. Build it by converting LiteLLM's upstream `model_prices_and_context_window.json` into the APISIX shape and overlaying local APISIX entries/overrides. Ollama Cloud capabilities still come from native `/api/show`, not this table.
+- `conf/model-capabilities.json` — final capability registry rendered into `GET /v1/model-capabilities`. Build it by converting LiteLLM's upstream `model_prices_and_context_window.json` into the APISIX shape, optionally overlaying OpenRouter provider metadata above LiteLLM, and overlaying local APISIX entries/overrides above both. Ollama Cloud capabilities still come from native `/api/show`, not this table.
 - `env.example` — template for provider API keys.
 - `conf/admin.key.example` — template for the Admin API key used by scripts.
 

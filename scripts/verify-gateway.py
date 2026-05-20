@@ -201,8 +201,12 @@ def check_model_capabilities(ctx: VerifyContext) -> None:
     qwen = models.get("siliconflow-cn/Qwen/Qwen3.6-35B-A3B") or {}
     qwen_reasoning = qwen.get("reasoning") or {}
     require(
-        qwen_reasoning.get("enabled") is False,
-        "siliconflow-cn/Qwen/Qwen3.6-35B-A3B should expose reasoning.enabled=false",
+        qwen_reasoning.get("enabled") is True,
+        "siliconflow-cn/Qwen/Qwen3.6-35B-A3B should expose OpenRouter-derived reasoning.enabled=true",
+    )
+    require(
+        {"minimal", "high", "xhigh"}.issubset(set(qwen_reasoning.get("efforts") or [])),
+        "siliconflow-cn/Qwen/Qwen3.6-35B-A3B should expose OpenRouter-derived reasoning efforts",
     )
     print(
         json.dumps(
@@ -211,6 +215,7 @@ def check_model_capabilities(ctx: VerifyContext) -> None:
                 "static_ollama_capability_present": "ollama/glm-5.1" in models,
                 "deepseek_reasoning_efforts": deepseek_reasoning.get("efforts"),
                 "xai_reasoning_efforts": xai_reasoning.get("efforts"),
+                "siliconflow_qwen_reasoning_efforts": qwen_reasoning.get("efforts"),
             },
             ensure_ascii=False,
             indent=2,

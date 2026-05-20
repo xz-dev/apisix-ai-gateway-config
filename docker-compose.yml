@@ -26,7 +26,7 @@ services:
     depends_on:
       - apisix-etcd
     ports:
-      # Replaces LiteLLM's old local OpenAI-compatible endpoint.
+      # Local OpenAI-compatible gateway endpoint.
       - "127.0.0.1:4000:9080"
       # Admin API is local-only; scripts use the generated key in conf/admin.key.
       - "127.0.0.1:9180:9180"

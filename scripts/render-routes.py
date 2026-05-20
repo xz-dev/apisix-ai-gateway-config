@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Render APISIX Admin API route JSON from conf/model-pools.json.
 
-This script expands LiteLLM-style wildcard provider entries into explicit APISIX
-pool routes. APISIX ai-proxy-multi has static per-instance options.model, so the
-clean gateway represents each public model id as one route that selects a pool.
+This script expands provider catalogs into explicit APISIX pool routes. APISIX
+ai-proxy-multi has static per-instance options.model, so the clean gateway
+represents each public model id as one route that selects a pool.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from typing import Any
 MANAGED_BY = "apisix-ai-gateway-config"
 CHAT_URI = "/v1/chat/completions"
 MODELS_URI = "/v1/models"
+CAPABILITIES_URI = "/v1/model-capabilities"
 
 
 def eprint(*args: Any) -> None:
@@ -177,15 +178,51 @@ def models_route(models: list[dict[str, str]]) -> dict[str, Any]:
     }
 
 
+def model_capabilities_route(capabilities: dict[str, Any], catalog: list[dict[str, str]]) -> dict[str, Any]:
+    catalog_ids = {item["id"] for item in catalog}
+    raw_models = capabilities.get("models") if isinstance(capabilities.get("models"), dict) else {}
+    models = {
+        model_id: value
+        for model_id, value in raw_models.items()
+        if model_id in catalog_ids and isinstance(value, dict)
+    }
+    payload = {
+        "version": capabilities.get("version") or 1,
+        "object": "model_capability.list",
+        "data": [
+            {"id": model_id, **value}
+            for model_id, value in sorted(models.items(), key=lambda item: item[0].lower())
+        ],
+        "models": models,
+    }
+    return {
+        "id": "main-model-capabilities",
+        "name": "Model capability metadata generated from APISIX capability registry",
+        "uri": CAPABILITIES_URI,
+        "methods": ["GET"],
+        "labels": {"managed-by": MANAGED_BY, "route-kind": "model-capabilities"},
+        "plugins": {
+            "mocking": {
+                "content_type": "application/json",
+                "response_status": 200,
+                "with_mock_header": False,
+                "response_example": json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            }
+        },
+    }
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--registry", required=True)
+    parser.add_argument("--capabilities")
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--catalog-timeout", type=float, default=20.0)
     args = parser.parse_args()
 
-    registry = json.loads(Path(args.registry).read_text())
+    registry_path = Path(args.registry)
+    registry = json.loads(registry_path.read_text())
+    capabilities_path = Path(args.capabilities) if args.capabilities else registry_path.with_name("model-capabilities.json")
+    capabilities = json.loads(capabilities_path.read_text()) if capabilities_path.exists() else {}
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
@@ -219,6 +256,7 @@ def main() -> int:
     catalog.sort(key=lambda item: item["id"].lower())
     routes.sort(key=lambda r: str(r.get("id")))
     routes.append(models_route(catalog))
+    routes.append(model_capabilities_route(capabilities if isinstance(capabilities, dict) else {}, catalog))
 
     manifest = {"managed_by": MANAGED_BY, "route_ids": [], "model_count": len(catalog), "models": [m["id"] for m in catalog]}
     for route in routes:

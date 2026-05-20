@@ -26,9 +26,11 @@ for item in routes:
 ids = {r.get('id') for r in managed}
 if 'main-models' not in ids:
     raise SystemExit('missing managed /v1/models catalog route')
+if 'main-model-capabilities' not in ids:
+    raise SystemExit('missing managed /v1/model-capabilities route')
 pool_routes = [r for r in managed if (r.get('labels') or {}).get('route-kind') == 'model-pool']
 if len(pool_routes) < 40:
-    raise SystemExit(f'expected migrated provider pools, got only {len(pool_routes)}')
+    raise SystemExit(f'expected managed provider pools, got only {len(pool_routes)}')
 for r in pool_routes:
     plugins = r.get('plugins') or {}
     multi = plugins.get('ai-proxy-multi') or {}
@@ -50,7 +52,7 @@ if len(inst) < 2:
     raise SystemExit(f'ollama/glm-5.1 should have two configured Ollama Cloud instances, got {len(inst)}')
 if sorted({i.get('priority', 0) for i in inst}) != [0]:
     raise SystemExit('Ollama Cloud load-balancing instances should share priority 0')
-# Check xAI migrated wildcard fallback provider uses lower priority than primary provider routes.
+# Check xAI fallback-provider pool uses lower priority than primary provider routes.
 xai = next((r for r in pool_routes if (r.get('labels') or {}).get('public-model') == 'xai/grok-4.3'), None)
 if not xai:
     raise SystemExit('missing xai/grok-4.3 fallback-provider pool')
@@ -60,7 +62,7 @@ if xai_inst.get('priority') != 10:
 print(json.dumps(summary, ensure_ascii=False, indent=2))
 PY
 
-echo '--- /v1/models migrated catalog ---'
+echo '--- /v1/models public catalog ---'
 curl -fsS http://127.0.0.1:4000/v1/models > "$MODELS_TMP"
 python3 - "$MODELS_TMP" <<'PY'
 import json, sys
@@ -75,10 +77,10 @@ required = {
 }
 missing = sorted(required.difference(ids))
 if missing:
-    raise SystemExit(f'missing migrated public models: {missing}')
+    raise SystemExit(f'missing public models: {missing}')
 counts = {prefix: sum(1 for mid in ids if isinstance(mid, str) and mid.startswith(prefix)) for prefix in ['ollama/', 'deepseek/', 'siliconflow-cn/', 'xai/']}
 if counts['ollama/'] < 20 or counts['deepseek/'] < 2 or counts['siliconflow-cn/'] < 20 or counts['xai/'] < 1:
-    raise SystemExit(f'provider migration counts too low: {counts}')
+    raise SystemExit(f'provider catalog counts too low: {counts}')
 non_chat_markers = ['embedding', 'reranker', 'image', 'bge', 'kolors', 'cosyvoice', 'sensevoice', 'telespeech', 'wan2.', 'ocr']
 non_chat = [mid for mid in ids if any(marker in str(mid).lower() for marker in non_chat_markers)]
 if non_chat:
@@ -96,7 +98,31 @@ for path in /siliconflow-cn/v1/models /siliconflow-cn/v1/chat/completions; do
   fi
 done
 
-echo '--- LiteLLM-specific metadata shims must be absent ---'
+echo '--- /v1/model-capabilities reasoning metadata ---'
+curl -fsS http://127.0.0.1:4000/v1/model-capabilities > "$MODELS_TMP"
+python3 - "$MODELS_TMP" <<'PY'
+import json, sys
+payload = json.load(open(sys.argv[1]))
+models = payload.get('models') or {}
+glm = models.get('ollama/glm-5.1') or {}
+reasoning = glm.get('reasoning') or {}
+if reasoning.get('enabled') is not True:
+    raise SystemExit('ollama/glm-5.1 should expose reasoning.enabled=true')
+if not {'low', 'medium', 'high'}.issubset(set(reasoning.get('efforts') or [])):
+    raise SystemExit('ollama/glm-5.1 should expose low/medium/high reasoning efforts')
+qwen = models.get('siliconflow-cn/Qwen/Qwen3.6-35B-A3B') or {}
+qwen_reasoning = qwen.get('reasoning') or {}
+if qwen_reasoning.get('enabled') is not False:
+    raise SystemExit('siliconflow-cn/Qwen/Qwen3.6-35B-A3B should expose reasoning.enabled=false')
+print(json.dumps({
+    'capability_count': len(models),
+    'reasoning_model': 'ollama/glm-5.1',
+    'reasoning_enabled': reasoning.get('enabled'),
+    'reasoning_efforts': reasoning.get('efforts'),
+}, ensure_ascii=False, indent=2))
+PY
+
+echo '--- unsupported metadata endpoints must be absent ---'
 for path in /v1/model/info /model/info; do
   status="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:4000${path}")"
   echo "${path}: HTTP ${status}"
@@ -146,7 +172,7 @@ PY
   rm -f "$TMP" "$BODY"
 }
 
-echo '--- semantic checks across migrated providers ---'
+echo '--- semantic checks across providers ---'
 check_model 'ollama/glm-5.1' 'APISIX_OK'
 check_model 'deepseek/deepseek-v4-flash' 'DEEPSEEK_OK'
 check_model 'siliconflow-cn/Qwen/Qwen3.6-35B-A3B' 'SILICONFLOW_OK'

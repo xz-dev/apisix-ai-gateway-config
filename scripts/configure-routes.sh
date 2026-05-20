@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ADMIN_KEY="$(tr -d '\r\n' < "$ROOT/conf/admin.key")"
 APISIX_ENV="$ROOT/.env"
-LITELLM_ENV="${LITELLM_ENV:-$HOME/.config/litellm/litellm.env}"
 
 if [[ ! -f "$APISIX_ENV" ]]; then
   echo "missing $APISIX_ENV" >&2
@@ -13,12 +12,6 @@ if [[ ! -f "$APISIX_ENV" ]]; then
 fi
 
 set -a
-# Keep APISIX-local .env authoritative, but source the historical LiteLLM env
-# first during migration so missing keys can be reused without printing secrets.
-if [[ -f "$LITELLM_ENV" ]]; then
-  # shellcheck disable=SC1090
-  source "$LITELLM_ENV"
-fi
 # shellcheck disable=SC1090
 source "$APISIX_ENV"
 set +a
@@ -84,13 +77,8 @@ while IFS= read -r id; do
   [[ -n "$id" ]] && api_delete "$id"
 done < "$TMPDIR/stale-route-ids.txt"
 
-# Remove historical split-provider/direct-route surfaces and LiteLLM metadata shims.
-for old_id in main-chat vision-chat vision-models main-model-info-v1 main-model-info-root tmp-regex-post-arg-test; do
-  api_delete "$old_id" || true
-done
-
 python3 - "$MANIFEST" <<'PY'
 import json, sys
 m = json.load(open(sys.argv[1]))
-print(f"APISIX AI gateway routes configured: {m['model_count']} public models, {len(m['route_ids'])} managed routes, unified /v1 pool routing, no LiteLLM shims.")
+print(f"APISIX AI gateway routes configured: {m['model_count']} public models, {len(m['route_ids'])} managed routes, unified /v1 pool routing.")
 PY

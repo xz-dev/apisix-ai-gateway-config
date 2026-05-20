@@ -11,18 +11,33 @@ This repository is intentionally **not** a fork of `apache/apisix`; it only cont
 - etcd for APISIX config storage
 - OpenAI-compatible routes:
   - `GET /v1/models`
+  - `GET /v1/model-capabilities`
   - `POST /v1/chat/completions`
 
-All model traffic uses the same pool abstraction. `conf/model-pools.json` is the no-secret registry for migrated provider surfaces; `scripts/render-routes.py` expands it into explicit APISIX `ai-proxy-multi` routes because APISIX instances use static upstream `options.model`. A single-backend model is still configured as a one-instance pool, and multi-key/provider cases use same-priority round-robin plus 429/5xx retry fallback. There is no separate SiliconFlow provider surface; SiliconFlow-backed models are selected by their public model IDs on the unified `/v1` endpoint.
+## Architecture
 
-Migrated LiteLLM surfaces:
+All model traffic uses the same pool abstraction. `conf/model-pools.json` is the no-secret registry for public model pools; `scripts/render-routes.py` expands it into explicit APISIX `ai-proxy-multi` routes because APISIX instances use static upstream `options.model`.
 
-- `ollama/*` -> `ollama/<upstream-model>` through Ollama Cloud, with `OLLAMA_CLOUD_KEY_1` and optional `OLLAMA_CLOUD_KEY_2` as same-priority load-balanced instances.
-- `deepseek/*` -> `deepseek/<upstream-model>` through the official DeepSeek API.
-- `siliconflow-cn/*` -> `siliconflow-cn/<upstream-model>` through SiliconFlow CN; non-chat catalog entries such as embedding/reranker/image/audio models are filtered out of the chat catalog.
-- global `* -> xai/*` fallback -> explicit `xai/<upstream-model>` routes through the official xAI API with lower instance priority.
+A single-backend model is still configured as a one-instance pool. Multi-key and fallback-provider cases use explicit instance `weight`, `priority`, and gateway-level `fallback_strategy` settings. Provider-backed models are selected by public model IDs on the unified `/v1` endpoint; there are no provider-specific client URL prefixes.
 
-This is not a LiteLLM compatibility layer. LiteLLM-specific endpoints `/v1/model/info` and `/model/info` should remain absent and return 404.
+Current public model families:
+
+- `ollama/<upstream-model>` through Ollama Cloud, with `OLLAMA_CLOUD_KEY_1` and optional `OLLAMA_CLOUD_KEY_2` as same-priority load-balanced instances.
+- `deepseek/<upstream-model>` through the official DeepSeek API.
+- `siliconflow-cn/<upstream-model>` through SiliconFlow CN; non-chat catalog entries such as embedding/reranker/image/audio/OCR models are filtered out of the chat catalog.
+- `xai/<upstream-model>` through the official xAI API with lower instance priority for fallback-style usage.
+
+Capability metadata is exposed through APISIX's own `GET /v1/model-capabilities` endpoint. Clients can consume reasoning availability, reasoning-effort choices, context windows, and related metadata without adding provider-specific branches.
+
+## Config files
+
+- `conf/config.yaml` — APISIX runtime config and enabled plugin list.
+- `conf/model-pools.json` — no-secret model pool registry used by `scripts/render-routes.py`.
+- `conf/model-capabilities.json` — fallback capability registry rendered into `GET /v1/model-capabilities`.
+- `env.example` — template for provider API keys.
+- `conf/admin.key.example` — template for the Admin API key used by scripts.
+
+See `docs/model-pools.md` for the complete `conf/model-pools.json` field reference.
 
 ## Secret files
 
@@ -51,8 +66,6 @@ XAI_API_KEY=replace-me
 SILICONFLOW_CN_API_KEY=replace-me
 ```
 
-`configure-routes.sh` also sources the historical LiteLLM env file at `~/.config/litellm/litellm.env` first during migration, then overlays APISIX-local `.env`. Keep `.env` authoritative after migration.
-
 `conf/admin.key` must match `deployment.admin.admin_key[0].key` in `conf/config.yaml` unless you intentionally change both.
 
 ## Start
@@ -62,6 +75,17 @@ docker compose up -d
 ./scripts/configure-routes.sh
 ./scripts/verify.sh
 ```
+
+## Verify
+
+`./scripts/verify.sh` checks local gateway state:
+
+- APISIX Admin API managed routes
+- generated `GET /v1/models` catalog
+- generated `GET /v1/model-capabilities` metadata
+- absence of direct `ai-proxy` route bypasses
+- absence of unsupported metadata endpoints
+- absence of provider-specific client URL prefixes
 
 ## Hermes ProviderProfile plugin
 

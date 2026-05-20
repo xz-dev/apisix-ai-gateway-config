@@ -102,7 +102,7 @@ Important invariants:
 - Model selection is based on exact `post_arg.model == <public_model_id>` matching.
 - Provider API keys are not committed; rendered routes receive `Authorization: Bearer <token>` from `.env` at configure time.
 - `GET /v1/models` is generated from the same public model catalog.
-- `GET /v1/model-capabilities` is generated from `conf/model-capabilities.json`, filtered to public models present in the generated catalog.
+- `GET /v1/model-capabilities` is generated from the final `conf/model-capabilities.json`, filtered to public models present in the generated catalog. Build that file by converting LiteLLM's upstream `model_prices_and_context_window.json` into APISIX capability shape and overlaying local APISIX entries/overrides. Ollama Cloud reasoning/tools/vision/context metadata should still be queried from native `/api/show` instead.
 
 ## Example provider entries
 

@@ -1,37 +1,49 @@
 {
   "version": 1,
-  "description": "Fallback Hermes capability registry for APISIX routes. Use only when upstream provider APIs do not expose capability metadata.",
+  "description": "Fallback Hermes capability registry for APISIX routes. Use only when upstream provider APIs do not expose capability metadata. Ollama Cloud is intentionally excluded because its native /api/show endpoint exposes authoritative capabilities.",
   "models": {
-    "ollama/glm-5.1": {
-      "context_window": 202752,
+    "deepseek/deepseek-v4-flash": {
+      "context_window": 1000000,
       "max_output_tokens": 8192,
       "supports_tools": true,
       "supports_vision": false,
       "reasoning": {
         "enabled": true,
         "param": "reasoning_effort",
-        "efforts": ["low", "medium", "high"]
+        "efforts": ["low", "medium", "high", "xhigh", "max"]
       }
     },
-    "glm-5.1": {
-      "context_window": 202752,
+    "deepseek/deepseek-v4-pro": {
+      "context_window": 1000000,
       "max_output_tokens": 8192,
       "supports_tools": true,
       "supports_vision": false,
       "reasoning": {
         "enabled": true,
         "param": "reasoning_effort",
-        "efforts": ["low", "medium", "high"]
+        "efforts": ["low", "medium", "high", "xhigh", "max"]
       }
     },
-    "siliconflow-cn/Qwen/Qwen3.6-35B-A3B": {
-      "context_window": 131072,
-      "max_output_tokens": 8192,
-      "supports_tools": false,
+    "xai/grok-4.3": {
+      "context_window": 1000000,
+      "max_output_tokens": 1000000,
+      "supports_tools": true,
       "supports_vision": true,
       "reasoning": {
-        "enabled": false,
-        "efforts": []
+        "enabled": true,
+        "param": "reasoning_effort",
+        "efforts": ["low", "medium", "high"]
+      }
+    },
+    "xai/grok-4.3-latest": {
+      "context_window": 1000000,
+      "max_output_tokens": 1000000,
+      "supports_tools": true,
+      "supports_vision": true,
+      "reasoning": {
+        "enabled": true,
+        "param": "reasoning_effort",
+        "efforts": ["low", "medium", "high"]
       }
     }
   }

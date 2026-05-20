@@ -33,11 +33,22 @@ Capability metadata is exposed through APISIX's own `GET /v1/model-capabilities`
 
 - `conf/config.yaml` — APISIX runtime config and enabled plugin list.
 - `conf/model-pools.json` — no-secret model pool registry used by `scripts/render-routes.py`.
-- `conf/model-capabilities.json` — fallback capability registry rendered into `GET /v1/model-capabilities`.
+- `conf/model-capabilities.json` — final capability registry rendered into `GET /v1/model-capabilities`. Build it by converting LiteLLM's upstream `model_prices_and_context_window.json` into the APISIX shape and overlaying local APISIX entries/overrides. Ollama Cloud capabilities still come from native `/api/show`, not this table.
 - `env.example` — template for provider API keys.
 - `conf/admin.key.example` — template for the Admin API key used by scripts.
 
 See `docs/model-pools.md` for the complete `conf/model-pools.json` field reference.
+
+To regenerate a merged capability registry from LiteLLM plus the local override file:
+
+```bash
+./scripts/build-model-capabilities.py \
+  --base conf/model-capabilities.json \
+  --output conf/model-capabilities.json
+./scripts/configure-routes.sh
+```
+
+The raw LiteLLM JSON is an input to this build step, not a file checked into this repository and not a runtime dependency of the Hermes APISIX ProviderProfile.
 
 ## Secret files
 
@@ -84,8 +95,6 @@ docker compose up -d
 - generated `GET /v1/models` catalog
 - generated `GET /v1/model-capabilities` metadata
 - absence of direct `ai-proxy` route bypasses
-- absence of unsupported metadata endpoints
-- absence of provider-specific client URL prefixes
 
 `./scripts/verify-integration.sh` is intentionally separate. It checks Hermes ProviderProfile discovery and real provider semantic calls, so it requires the Hermes plugin, local Hermes environment, provider API keys, and upstream model availability.
 

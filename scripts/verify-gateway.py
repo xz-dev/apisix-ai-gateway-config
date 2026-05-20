@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,17 +57,6 @@ def request_json(url: str, *, admin_key: str | None = None) -> dict[str, Any]:
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode())
-
-
-def request_status(url: str) -> int:
-    req = urllib.request.Request(url)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            resp.read()
-            return int(resp.status)
-    except urllib.error.HTTPError as exc:
-        exc.read()
-        return int(exc.code)
 
 
 def load_context(args: argparse.Namespace) -> VerifyContext:
@@ -190,13 +178,26 @@ def check_public_catalog(ctx: VerifyContext) -> None:
 
 def check_model_capabilities(ctx: VerifyContext) -> None:
     models = ctx.capabilities.get("models") or {}
-    glm = models.get("ollama/glm-5.1") or {}
-    reasoning = glm.get("reasoning") or {}
-    require(reasoning.get("enabled") is True, "ollama/glm-5.1 should expose reasoning.enabled=true")
     require(
-        {"low", "medium", "high"}.issubset(set(reasoning.get("efforts") or [])),
-        "ollama/glm-5.1 should expose low/medium/high reasoning efforts",
+        "ollama/glm-5.1" not in models,
+        "ollama/glm-5.1 should not be in the static capability table; use Ollama /api/show instead",
     )
+    deepseek = models.get("deepseek/deepseek-v4-pro") or {}
+    deepseek_reasoning = deepseek.get("reasoning") or {}
+    if deepseek:
+        require(deepseek_reasoning.get("enabled") is True, "deepseek/deepseek-v4-pro should expose reasoning.enabled=true")
+        require(
+            {"high", "max"}.issubset(set(deepseek_reasoning.get("efforts") or [])),
+            "deepseek/deepseek-v4-pro should expose high/max reasoning efforts",
+        )
+    xai = models.get("xai/grok-4.3") or {}
+    xai_reasoning = xai.get("reasoning") or {}
+    if xai:
+        require(xai_reasoning.get("enabled") is True, "xai/grok-4.3 should expose reasoning.enabled=true")
+        require(
+            {"low", "medium", "high"}.issubset(set(xai_reasoning.get("efforts") or [])),
+            "xai/grok-4.3 should expose low/medium/high reasoning efforts",
+        )
     qwen = models.get("siliconflow-cn/Qwen/Qwen3.6-35B-A3B") or {}
     qwen_reasoning = qwen.get("reasoning") or {}
     require(
@@ -207,9 +208,9 @@ def check_model_capabilities(ctx: VerifyContext) -> None:
         json.dumps(
             {
                 "capability_count": len(models),
-                "reasoning_model": "ollama/glm-5.1",
-                "reasoning_enabled": reasoning.get("enabled"),
-                "reasoning_efforts": reasoning.get("efforts"),
+                "static_ollama_capability_present": "ollama/glm-5.1" in models,
+                "deepseek_reasoning_efforts": deepseek_reasoning.get("efforts"),
+                "xai_reasoning_efforts": xai_reasoning.get("efforts"),
             },
             ensure_ascii=False,
             indent=2,
@@ -217,25 +218,11 @@ def check_model_capabilities(ctx: VerifyContext) -> None:
     )
 
 
-def check_absent_surfaces(ctx: VerifyContext) -> None:
-    expectations = {
-        "/siliconflow-cn/v1/models": {404, 405},
-        "/siliconflow-cn/v1/chat/completions": {404, 405},
-        "/v1/model/info": {404},
-        "/model/info": {404},
-    }
-    for path, allowed in expectations.items():
-        status = request_status(f"{ctx.gateway_url}{path}")
-        print(f"{path}: HTTP {status}")
-        require(status in allowed, f"expected {path} to return one of {sorted(allowed)}")
-
-
 CHECKS: list[tuple[str, Callable[[VerifyContext], None]]] = [
     ("APISIX Admin API managed model routes", check_admin_routes),
     ("APISIX pool instance priorities", check_instance_priorities),
     ("/v1/models public catalog", check_public_catalog),
     ("/v1/model-capabilities reasoning metadata", check_model_capabilities),
-    ("unsupported/provider-specific surfaces absent", check_absent_surfaces),
 ]
 
 

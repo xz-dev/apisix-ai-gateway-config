@@ -19,6 +19,7 @@ plugins:
   - mocking
   - ai-proxy-multi
   - ai-proxy
+  - ai-rate-limiting
   - prometheus
 
 deployment:

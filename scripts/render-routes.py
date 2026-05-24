@@ -38,6 +38,13 @@ class RouterSettings:
 
 
 @dataclass(frozen=True)
+class InstanceCredential:
+    name: str
+    value: str
+    priority: int
+
+
+@dataclass(frozen=True)
 class ProviderConfig:
     id: str
     owned_by: str
@@ -46,12 +53,11 @@ class ProviderConfig:
     catalog_url: str | None
     chat_endpoint: str
     driver: str
-    env_names: list[str]
+    credentials: list[InstanceCredential]
     fallback_models: list[str]
     include_patterns: list[Pattern[str]]
     exclude_patterns: list[Pattern[str]]
     route_priority: int
-    instance_priority: int
     instance_weight: int
     allow_catalog_fallback: bool
 
@@ -113,23 +119,68 @@ def compile_patterns(raw: Any, field: str, provider_id: str) -> list[Pattern[str
     return [re.compile(pattern) for pattern in string_list(raw, field, provider_id)]
 
 
-def require_env_names(provider_id: str, env_var_names: list[str], required_names: list[str], env: dict[str, str]) -> list[str]:
+def split_csv(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def collect_indexed(prefix: str, env: dict[str, str]) -> list[tuple[str, str]]:
+    pattern = re.compile(rf"^{re.escape(prefix)}_(\d+)$")
+    found: list[tuple[int, str, str]] = []
+    for name, value in env.items():
+        match = pattern.match(name)
+        if match and value:
+            found.append((int(match.group(1)), name, value))
+    return [(name, value) for _, name, value in sorted(found)]
+
+
+def collect_credentials(
+    *,
+    env_names: list[str],
+    env_prefixes: list[str],
+    priority: int,
+    env: dict[str, str],
+    fallback: bool = False,
+) -> list[InstanceCredential]:
+    raw: list[tuple[str, str]] = [(name, env[name]) for name in env_names if env.get(name)]
+    for prefix in env_prefixes:
+        if env.get(prefix):
+            raw.append((prefix, env[prefix]))
+        for idx, value in enumerate(split_csv(env.get(f"{prefix}S")), start=1):
+            raw.append((f"{prefix}S_{idx}", value))
+        raw.extend(collect_indexed(prefix, env))
+
+    credentials: list[InstanceCredential] = []
+    seen_values: set[str] = set()
+    for _, value in raw:
+        if value in seen_values:
+            continue
+        seen_values.add(value)
+        idx = len(credentials) + 1
+        name = f"fallback-{idx}" if fallback else str(idx)
+        credentials.append(InstanceCredential(name=name, value=value, priority=priority))
+    return credentials
+
+
+def require_env_names(provider_id: str, required_names: list[str], credentials: list[InstanceCredential], env: dict[str, str]) -> None:
     missing = [name for name in required_names if not env.get(name)]
-    if missing:
+    if missing and not credentials:
         raise SystemExit(f"missing required env var(s) for provider {provider_id}: {', '.join(missing)}")
-    configured = [name for name in env_var_names if env.get(name)]
-    if not configured:
+    if not credentials:
         raise SystemExit(f"provider {provider_id} has no configured API keys")
-    return configured
 
 
 def normalize_router_settings(registry: dict[str, Any]) -> RouterSettings:
     raw_settings = registry.get("router_settings")
     raw: dict[str, Any] = raw_settings if isinstance(raw_settings, dict) else {}
+    timeout = int(raw.get("timeout", 30000))
+    if not 1 <= timeout <= 60000:
+        raise SystemExit("router_settings.timeout must be between 1 and 60000 ms")
     return RouterSettings(
         algorithm=str(raw.get("algorithm") or "roundrobin"),
-        fallback_strategy=string_list(raw.get("fallback_strategy") or ["http_429", "http_5xx"], "fallback_strategy", "router_settings"),
-        timeout=int(raw.get("timeout", 600000)),
+        fallback_strategy=string_list(raw.get("fallback_strategy") or ["rate_limiting", "http_429", "http_5xx"], "fallback_strategy", "router_settings"),
+        timeout=timeout,
         ssl_verify=bool(raw.get("ssl_verify", True)),
         keepalive=bool(raw.get("keepalive", True)),
         keepalive_timeout=int(raw.get("keepalive_timeout", 60000)),
@@ -139,8 +190,24 @@ def normalize_router_settings(registry: dict[str, Any]) -> RouterSettings:
 
 def normalize_provider(raw: dict[str, Any], index: int, env: dict[str, str]) -> ProviderConfig:
     provider_id = required_string(raw, "id", f"entry #{index}")
-    env_var_names = string_list(raw.get("env_vars"), "env_vars", provider_id)
+    primary_priority = int(raw.get("instance_priority", 0))
+    fallback_priority = int(raw.get("fallback_instance_priority", primary_priority - 100))
+    primary_credentials = collect_credentials(
+        env_names=string_list(raw.get("env_vars"), "env_vars", provider_id),
+        env_prefixes=string_list(raw.get("env_var_prefixes"), "env_var_prefixes", provider_id),
+        priority=primary_priority,
+        env=env,
+    )
+    fallback_credentials = collect_credentials(
+        env_names=string_list(raw.get("fallback_env_vars"), "fallback_env_vars", provider_id),
+        env_prefixes=string_list(raw.get("fallback_env_var_prefixes"), "fallback_env_var_prefixes", provider_id),
+        priority=fallback_priority,
+        env=env,
+        fallback=True,
+    )
+    credentials = primary_credentials + fallback_credentials
     required_names = string_list(raw.get("required_env_vars"), "required_env_vars", provider_id)
+    require_env_names(provider_id, required_names, credentials, env)
     return ProviderConfig(
         id=provider_id,
         owned_by=str(raw.get("owned_by") or provider_id),
@@ -149,12 +216,11 @@ def normalize_provider(raw: dict[str, Any], index: int, env: dict[str, str]) -> 
         catalog_url=optional_string(raw, "catalog_url", provider_id),
         chat_endpoint=required_string(raw, "chat_endpoint", provider_id),
         driver=str(raw.get("driver") or "openai-compatible"),
-        env_names=require_env_names(provider_id, env_var_names, required_names, env),
+        credentials=credentials,
         fallback_models=string_list(raw.get("fallback_models"), "fallback_models", provider_id),
         include_patterns=compile_patterns(raw.get("include_model_patterns"), "include_model_patterns", provider_id),
         exclude_patterns=compile_patterns(raw.get("exclude_model_patterns"), "exclude_model_patterns", provider_id),
         route_priority=int(raw.get("route_priority", 100)),
-        instance_priority=int(raw.get("instance_priority", 0)),
         instance_weight=int(raw.get("instance_weight", 1)),
         allow_catalog_fallback=bool(raw.get("allow_catalog_fallback", False)),
     )
@@ -206,7 +272,7 @@ def filter_models(provider: ProviderConfig, models: list[str]) -> list[str]:
 def catalog_models(provider: ProviderConfig, env: dict[str, str], timeout: float) -> list[str]:
     if provider.catalog_url is None:
         return filter_models(provider, provider.fallback_models)
-    api_key = env[provider.env_names[0]]
+    api_key = provider.credentials[0].value
     try:
         models = extract_catalog_ids(request_json(provider.catalog_url, api_key=api_key, timeout=timeout))
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
@@ -233,18 +299,19 @@ def expand_provider_models(providers: list[ProviderConfig], env: dict[str, str],
 
 
 def instances_for_model(model: ExpandedModel, env: dict[str, str]) -> list[dict[str, Any]]:
+    del env
     provider = model.provider
     return [
         {
-            "name": f"{provider.id}-{idx}",
+            "name": f"{provider.id}-{credential.name}",
             "provider": provider.driver,
             "weight": provider.instance_weight,
-            "priority": provider.instance_priority,
-            "auth": {"header": {"Authorization": "Bearer " + env[env_name]}},
+            "priority": credential.priority,
+            "auth": {"header": {"Authorization": "Bearer " + credential.value}},
             "options": {"model": f"{provider.upstream_prefix}{model.upstream_model}"},
             "override": {"endpoint": provider.chat_endpoint},
         }
-        for idx, env_name in enumerate(provider.env_names, start=1)
+        for credential in provider.credentials
     ]
 
 

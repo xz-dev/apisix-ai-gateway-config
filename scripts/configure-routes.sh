@@ -6,7 +6,7 @@ APISIX_ENV="$ROOT/.env"
 
 if [[ ! -f "$APISIX_ENV" ]]; then
   echo "missing $APISIX_ENV" >&2
-  echo "Create it with OLLAMA_CLOUD_KEY_1, optional OLLAMA_CLOUD_KEY_2, DEEPSEEK_API_KEY, XAI_API_KEY, and SILICONFLOW_CN_API_KEY." >&2
+  echo "Create it with provider API keys such as OLLAMA_CLOUD_KEY_1 or OLLAMA_CLOUD_KEYS, plus DEEPSEEK_API_KEY, XAI_API_KEY, and SILICONFLOW_CN_API_KEY." >&2
   exit 1
 fi
 

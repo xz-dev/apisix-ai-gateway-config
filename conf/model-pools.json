@@ -4,10 +4,11 @@
   "router_settings": {
     "algorithm": "roundrobin",
     "fallback_strategy": [
+      "rate_limiting",
       "http_429",
       "http_5xx"
     ],
-    "timeout": 600000,
+    "timeout": 30000,
     "keepalive": true,
     "keepalive_timeout": 60000,
     "keepalive_pool": 30,
@@ -22,14 +23,16 @@
       "catalog_url": "https://ollama.com/v1/models",
       "chat_endpoint": "https://ollama.com/v1/chat/completions",
       "driver": "openai-compatible",
-      "env_vars": [
-        "OLLAMA_CLOUD_KEY_1",
-        "OLLAMA_CLOUD_KEY_2"
+      "env_vars": [],
+      "env_var_prefixes": [
+        "OLLAMA_CLOUD_KEY"
       ],
-      "required_env_vars": [
-        "OLLAMA_CLOUD_KEY_1"
+      "fallback_env_var_prefixes": [
+        "OLLAMA_CLOUD_FALLBACK_KEY"
       ],
-      "instance_priority": 0,
+      "required_env_vars": [],
+      "instance_priority": 100,
+      "fallback_instance_priority": 0,
       "instance_weight": 1,
       "fallback_models": [
         "glm-5.1"
@@ -70,6 +73,12 @@
       "driver": "openai-compatible",
       "env_vars": [
         "SILICONFLOW_CN_API_KEY"
+      ],
+      "env_var_prefixes": [
+        "SILICONFLOW_CN_API_KEY"
+      ],
+      "fallback_env_var_prefixes": [
+        "SILICONFLOW_CN_FALLBACK_API_KEY"
       ],
       "required_env_vars": [
         "SILICONFLOW_CN_API_KEY"

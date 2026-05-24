@@ -70,11 +70,24 @@ chmod 600 .env conf/admin.key
 Edit `.env`:
 
 ```bash
+# Numbered variables are expanded into deployments in a round-robin pool.
 OLLAMA_CLOUD_KEY_1=replace-me
-OLLAMA_CLOUD_KEY_2=replace-me   # optional but recommended: same-priority LB/fallback
+# OLLAMA_CLOUD_KEY_2=replace-me
+
+# Or use a comma-separated list for arbitrary-size primary pools.
+# OLLAMA_CLOUD_KEYS=key-a,key-b,key-c
+
+# Optional lower-priority fallback deployments, modeled after LiteLLM's
+# deployment/fallback split: primary instances are tried first, then fallback
+# instances are eligible after primaries are exhausted by 429/5xx/rate-limit state.
+# OLLAMA_CLOUD_FALLBACK_KEYS=fallback-key-a,fallback-key-b
+
 DEEPSEEK_API_KEY=replace-me
 XAI_API_KEY=replace-me
 SILICONFLOW_CN_API_KEY=replace-me
+
+# Keep this bounded so fallback is observable instead of looking like an infinite wait.
+# APISIX_AI_GATEWAY_TIMEOUT_MS=30000
 ```
 
 `conf/admin.key` must match `deployment.admin.admin_key[0].key` in `conf/config.yaml` unless you intentionally change both.

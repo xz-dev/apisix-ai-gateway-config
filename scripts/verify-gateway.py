@@ -124,9 +124,15 @@ def check_admin_routes(ctx: VerifyContext) -> None:
             route.get("uri") == "/v1/chat/completions" and "ai-proxy-multi" in plugins,
             f"managed model route is not an ai-proxy-multi chat pool: {route.get('id')}",
         )
+        fallback_strategy = multi.get("fallback_strategy") or []
         require(
-            multi.get("fallback_strategy") == ["http_429", "http_5xx"],
-            f"route missing 429/5xx fallback strategy: {route.get('id')}",
+            {"rate_limiting", "http_429", "http_5xx"}.issubset(set(fallback_strategy)),
+            f"route missing rate-limit/429/5xx fallback strategy: {route.get('id')}",
+        )
+        timeout = multi.get("timeout")
+        require(
+            isinstance(timeout, int) and 1 <= timeout <= 60_000,
+            f"route has unbounded/invalid upstream timeout: {route.get('id')} timeout={timeout!r}",
         )
 
     print(
@@ -152,8 +158,8 @@ def check_instance_priorities(ctx: VerifyContext) -> None:
         f"ollama/glm-5.1 should have two configured Ollama Cloud instances, got {len(ollama_instances)}",
     )
     require(
-        sorted({i.get("priority", 0) for i in ollama_instances}) == [0],
-        "Ollama Cloud load-balancing instances should share priority 0",
+        sorted({i.get("priority", 0) for i in ollama_instances}) == [100],
+        "Ollama Cloud primary load-balancing instances should share priority 100",
     )
 
     xai = next((r for r in pools if (r.get("labels") or {}).get("public-model") == "xai/grok-4.3"), None)

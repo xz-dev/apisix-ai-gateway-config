@@ -154,3 +154,21 @@ def test_renderer_generates_routes_for_valid_registry(tmp_path):
     route = json.loads((tmp_path / "out" / "route-pool-test-model-a.json").read_text(encoding="utf-8"))
     assert route["vars"] == [["post_arg.model", "==", "test/model-a"]]
     assert route["plugins"]["ai-proxy-multi"]["instances"][0]["options"]["model"] == "model-a"
+
+
+
+def test_renderer_generates_cors_preflight_route(tmp_path):
+    result = run_renderer(tmp_path, registry_with(provider()), env={"TEST_API_KEY": "secret"})
+
+    assert result.returncode == 0, result.stderr
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert "main-cors-preflight" in manifest["route_ids"]
+    route = json.loads((tmp_path / "out" / "route-main-cors-preflight.json").read_text(encoding="utf-8"))
+    assert route["uri"] == "/v1/*"
+    assert route["methods"] == ["OPTIONS"]
+    assert route["priority"] > 1000
+    assert route["plugins"]["cors"]["allow_origins"] == "*"
+    assert "POST" in route["plugins"]["cors"]["allow_methods"]
+    assert "OPTIONS" in route["plugins"]["cors"]["allow_methods"]
+    assert "Authorization" in route["plugins"]["cors"]["allow_headers"]
+    assert route["plugins"]["mocking"]["response_status"] == 204

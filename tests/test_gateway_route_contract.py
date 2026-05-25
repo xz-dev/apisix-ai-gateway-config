@@ -190,3 +190,20 @@ def test_models_catalog_matches_public_model_ids_used_by_chat_routes(tmp_path: P
     assert manifest["models"] == ["ollama/glm-5.1"]
     assert public_ids == {"ollama/glm-5.1"}
     assert ["post_arg.model", "==", "ollama/glm-5.1"] in routes["pool-ollama-glm-5-1"].get("vars", [])
+
+
+
+def test_cors_preflight_route_is_high_priority_and_not_model_gated(tmp_path: Path):
+    routes, manifest = _render(tmp_path, _registry(), {"OLLAMA_CLOUD_KEY_1": "primary-a"})
+
+    route = routes["main-cors-preflight"]
+
+    assert "main-cors-preflight" in manifest["route_ids"]
+    assert route["uri"] == "/v1/*"
+    assert route["methods"] == ["OPTIONS"]
+    assert route["priority"] > 1000
+    assert "vars" not in route, "preflight has no JSON body, so it must not be gated on post_arg.model"
+    assert route["plugins"]["cors"]["allow_origins"] == "*"
+    assert route["plugins"]["cors"]["allow_methods"] == "GET,POST,OPTIONS"
+    assert route["plugins"]["cors"]["allow_headers"] == "Content-Type,Authorization"
+    assert route["plugins"]["mocking"]["response_status"] == 204

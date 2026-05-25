@@ -24,6 +24,7 @@ MANAGED_BY = "apisix-ai-gateway-config"
 CHAT_URI = "/v1/chat/completions"
 MODELS_URI = "/v1/models"
 CAPABILITIES_URI = "/v1/model-capabilities"
+CORS_PREFLIGHT_URI = "/v1/*"
 
 
 @dataclass(frozen=True)
@@ -345,6 +346,32 @@ def pool_route(model: ExpandedModel, settings: RouterSettings, env: dict[str, st
     }
 
 
+def cors_preflight_route() -> dict[str, Any]:
+    return {
+        "id": "main-cors-preflight",
+        "name": "CORS preflight handler for OpenAI-compatible /v1 API",
+        "uri": CORS_PREFLIGHT_URI,
+        "methods": ["OPTIONS"],
+        "priority": 10_000,
+        "labels": {"managed-by": MANAGED_BY, "route-kind": "cors-preflight"},
+        "plugins": {
+            "cors": {
+                "allow_origins": "*",
+                "allow_methods": "GET,POST,OPTIONS",
+                "allow_headers": "Content-Type,Authorization",
+                "expose_headers": "Content-Type",
+                "max_age": 3600,
+            },
+            "mocking": {
+                "content_type": "text/plain",
+                "response_status": 204,
+                "with_mock_header": False,
+                "response_example": "",
+            },
+        },
+    }
+
+
 def models_route(models: list[dict[str, str]]) -> dict[str, Any]:
     payload = {
         "object": "list",
@@ -413,6 +440,7 @@ def build_catalog(expanded: list[ExpandedModel]) -> list[dict[str, str]]:
 def build_routes(expanded: list[ExpandedModel], catalog: list[dict[str, str]], capabilities: dict[str, Any], settings: RouterSettings, env: dict[str, str]) -> list[dict[str, Any]]:
     routes = [pool_route(item, settings, env) for item in expanded]
     routes.sort(key=lambda route: str(route["id"]))
+    routes.append(cors_preflight_route())
     routes.append(models_route(catalog))
     routes.append(model_capabilities_route(capabilities, catalog))
     return routes

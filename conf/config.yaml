@@ -17,6 +17,7 @@ nginx_config:
 plugins:
   - ai
   - mocking
+  - cors
   - ai-proxy-multi
   - ai-proxy
   - ai-rate-limiting

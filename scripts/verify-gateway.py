@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +58,17 @@ def request_json(url: str, *, admin_key: str | None = None) -> dict[str, Any]:
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode())
+
+
+def request_status(url: str, *, method: str, headers: dict[str, str] | None = None) -> tuple[int, dict[str, str]]:
+    req = urllib.request.Request(url, headers=headers or {}, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
+            return int(resp.status), dict(resp.headers)
+    except urllib.error.HTTPError as exc:
+        exc.read()
+        return int(exc.code), dict(exc.headers)
 
 
 def load_context(args: argparse.Namespace) -> VerifyContext:
@@ -168,6 +180,31 @@ def check_instance_priorities(ctx: VerifyContext) -> None:
     require(xai_instances[0].get("priority") == 10, "xAI fallback-provider instance should use priority 10")
 
 
+
+def check_cors_preflight(ctx: VerifyContext) -> None:
+    route = next((r for r in managed_routes(ctx) if r.get("id") == "main-cors-preflight"), None)
+    require(route is not None, "missing managed CORS preflight route")
+    require(route.get("uri") == "/v1/*", f"CORS preflight route should cover /v1/*, got {route.get('uri')!r}")
+    require(route.get("methods") == ["OPTIONS"], f"CORS preflight route methods should be OPTIONS-only: {route.get('methods')!r}")
+    require("vars" not in route, "CORS preflight route must not be gated on post_arg.model; OPTIONS has no body")
+    plugins = route.get("plugins") or {}
+    require("cors" in plugins, "CORS preflight route missing cors plugin")
+    require((plugins.get("mocking") or {}).get("response_status") == 204, "CORS preflight route should mock HTTP 204")
+
+    status, headers = request_status(
+        f"{ctx.gateway_url}/v1/chat/completions",
+        method="OPTIONS",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+    require(status in {200, 204}, f"browser preflight should succeed, got HTTP {status}")
+    allow_origin = headers.get("Access-Control-Allow-Origin") or headers.get("access-control-allow-origin")
+    require(allow_origin == "*", f"preflight missing Access-Control-Allow-Origin: *, got {allow_origin!r}")
+    print(json.dumps({"cors_preflight_status": status, "allow_origin": allow_origin}, ensure_ascii=False, indent=2))
+
 def check_public_catalog(ctx: VerifyContext) -> None:
     ids = catalog_ids(ctx)
     missing = sorted(REQUIRED_MODELS.difference(ids))
@@ -232,6 +269,7 @@ def check_model_capabilities(ctx: VerifyContext) -> None:
 CHECKS: list[tuple[str, Callable[[VerifyContext], None]]] = [
     ("APISIX Admin API managed model routes", check_admin_routes),
     ("APISIX pool instance priorities", check_instance_priorities),
+    ("CORS preflight route", check_cors_preflight),
     ("/v1/models public catalog", check_public_catalog),
     ("/v1/model-capabilities reasoning metadata", check_model_capabilities),
 ]

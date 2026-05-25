@@ -13,10 +13,11 @@ This repository is intentionally **not** a fork of `apache/apisix`; it only cont
   - `GET /v1/models`
   - `GET /v1/model-capabilities`
   - `POST /v1/chat/completions`
+  - `OPTIONS /v1/*` CORS preflight for browser clients
 
 ## Architecture
 
-All model traffic uses the same pool abstraction. `conf/model-pools.json` is the no-secret registry for public model pools; `scripts/render-routes.py` expands it into explicit APISIX `ai-proxy-multi` routes because APISIX instances use static upstream `options.model`. `scripts/deploy-routes.py` is the deployment pipeline that renders desired routes, applies them through the APISIX Admin API, and removes stale repo-managed routes.
+All model traffic uses the same pool abstraction. `conf/model-pools.json` is the no-secret registry for public model pools; `scripts/render-routes.py` expands it into explicit APISIX `ai-proxy-multi` routes because APISIX instances use static upstream `options.model`. The generated route set also includes a high-priority `OPTIONS /v1/*` CORS preflight route so browser clients can call the OpenAI-compatible API. `scripts/deploy-routes.py` is the deployment pipeline that renders desired routes, applies them through the APISIX Admin API, and removes stale repo-managed routes.
 
 A single-backend model is still configured as a one-instance pool. Multi-key and fallback-provider cases use explicit instance `weight`, `priority`, and gateway-level `fallback_strategy` settings. Provider-backed models are selected by public model IDs on the unified `/v1` endpoint; there are no provider-specific client URL prefixes.
 

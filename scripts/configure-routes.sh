@@ -1,10 +1,10 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 APISIX_ENV="$ROOT/.env"
 
-if [[ ! -f "$APISIX_ENV" ]]; then
+if [ ! -f "$APISIX_ENV" ]; then
   echo "missing $APISIX_ENV" >&2
   echo "Create it with provider API keys such as OLLAMA_CLOUD_KEY_1 or OLLAMA_CLOUD_KEYS, plus DEEPSEEK_API_KEY, XAI_API_KEY, and SILICONFLOW_CN_API_KEY." >&2
   exit 1
@@ -12,7 +12,7 @@ fi
 
 set -a
 # shellcheck disable=SC1090
-source "$APISIX_ENV"
+. "$APISIX_ENV"
 set +a
 
 deploy_routes() {

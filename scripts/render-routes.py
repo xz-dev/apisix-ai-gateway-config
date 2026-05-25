@@ -27,6 +27,16 @@ CAPABILITIES_URI = "/v1/model-capabilities"
 CORS_PREFLIGHT_URI = "/v1/*"
 
 
+def cors_plugin() -> dict[str, Any]:
+    return {
+        "allow_origins": "*",
+        "allow_methods": "GET,POST,OPTIONS",
+        "allow_headers": "Content-Type,Authorization",
+        "expose_headers": "Content-Type",
+        "max_age": 3600,
+    }
+
+
 @dataclass(frozen=True)
 class RouterSettings:
     algorithm: str
@@ -342,7 +352,7 @@ def pool_route(model: ExpandedModel, settings: RouterSettings, env: dict[str, st
             "upstream-model": model.upstream_model,
         },
         "vars": [["post_arg.model", "==", model.public_model]],
-        "plugins": {"ai-proxy-multi": multi},
+        "plugins": {"ai-proxy-multi": multi, "cors": cors_plugin()},
     }
 
 
@@ -355,13 +365,7 @@ def cors_preflight_route() -> dict[str, Any]:
         "priority": 10_000,
         "labels": {"managed-by": MANAGED_BY, "route-kind": "cors-preflight"},
         "plugins": {
-            "cors": {
-                "allow_origins": "*",
-                "allow_methods": "GET,POST,OPTIONS",
-                "allow_headers": "Content-Type,Authorization",
-                "expose_headers": "Content-Type",
-                "max_age": 3600,
-            },
+            "cors": cors_plugin(),
             "mocking": {
                 "content_type": "text/plain",
                 "response_status": 204,
@@ -387,6 +391,7 @@ def models_route(models: list[dict[str, str]]) -> dict[str, Any]:
         "methods": ["GET"],
         "labels": {"managed-by": MANAGED_BY, "route-kind": "model-catalog"},
         "plugins": {
+            "cors": cors_plugin(),
             "mocking": {
                 "content_type": "application/json",
                 "response_status": 200,
@@ -421,6 +426,7 @@ def model_capabilities_route(capabilities: dict[str, Any], catalog: list[dict[st
         "methods": ["GET"],
         "labels": {"managed-by": MANAGED_BY, "route-kind": "model-capabilities"},
         "plugins": {
+            "cors": cors_plugin(),
             "mocking": {
                 "content_type": "application/json",
                 "response_status": 200,

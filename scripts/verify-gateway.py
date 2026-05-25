@@ -126,12 +126,22 @@ def check_admin_routes(ctx: VerifyContext) -> None:
     ids = {r.get("id") for r in managed}
     require("main-models" in ids, "missing managed /v1/models catalog route")
     require("main-model-capabilities" in ids, "missing managed /v1/model-capabilities route")
+    for route_id in ["main-models", "main-model-capabilities"]:
+        route = next((r for r in managed if r.get("id") == route_id), None) or {}
+        cors = ((route.get("plugins") or {}).get("cors") or {})
+        require(cors.get("allow_origins") == "*", f"{route_id} missing CORS allow_origins=*")
+        require("GET" in str(cors.get("allow_methods") or ""), f"{route_id} missing GET CORS method")
+        require(cors.get("expose_headers") == "Content-Type", f"{route_id} missing CORS exposed Content-Type")
 
     pools = pool_routes(ctx)
     require(len(pools) >= 40, f"expected managed provider pools, got only {len(pools)}")
     for route in pools:
         plugins = route.get("plugins") or {}
         multi = plugins.get("ai-proxy-multi") or {}
+        cors = plugins.get("cors") or {}
+        require(cors.get("allow_origins") == "*", f"pool route missing CORS allow_origins=*: {route.get('id')}")
+        require("POST" in str(cors.get("allow_methods") or ""), f"pool route missing POST CORS method: {route.get('id')}")
+        require(cors.get("expose_headers") == "Content-Type", f"pool route missing CORS exposed Content-Type: {route.get('id')}")
         require(
             route.get("uri") == "/v1/chat/completions" and "ai-proxy-multi" in plugins,
             f"managed model route is not an ai-proxy-multi chat pool: {route.get('id')}",

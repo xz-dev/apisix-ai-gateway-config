@@ -154,6 +154,9 @@ def test_renderer_generates_routes_for_valid_registry(tmp_path):
     route = json.loads((tmp_path / "out" / "route-pool-test-model-a.json").read_text(encoding="utf-8"))
     assert route["vars"] == [["post_arg.model", "==", "test/model-a"]]
     assert route["plugins"]["ai-proxy-multi"]["instances"][0]["options"]["model"] == "model-a"
+    assert route["plugins"]["cors"]["allow_origins"] == "*"
+    assert "POST" in route["plugins"]["cors"]["allow_methods"]
+    assert route["plugins"]["cors"]["expose_headers"] == "Content-Type"
 
 
 

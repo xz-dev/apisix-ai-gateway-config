@@ -1,7 +1,7 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
 python3 "$ROOT/scripts/verify-gateway.py" \
   --admin-key-file "$ROOT/conf/admin.key" \

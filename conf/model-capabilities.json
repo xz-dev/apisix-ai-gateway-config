@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Fallback Hermes capability registry for APISIX routes. Use only when upstream provider APIs do not expose capability metadata. Ollama Cloud is intentionally excluded because its native /api/show endpoint exposes authoritative capabilities.",
+  "description": "Fallback Hermes capability registry for APISIX routes. Use model-centric local overrides when provider catalogs omit important capability metadata such as reasoning support and reasoning effort values.",
   "generated_from": {
     "litellm": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
     "openrouter": "https://openrouter.ai/api/v1/models",

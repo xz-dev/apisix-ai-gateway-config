@@ -17,24 +17,27 @@ This repository is intentionally **not** a fork of `apache/apisix`; it only cont
 
 ## Architecture
 
-All model traffic uses the same pool abstraction. `conf/model-pools.json` is the no-secret registry for public model pools; `scripts/render-routes.py` expands it into explicit APISIX `ai-proxy-multi` routes because APISIX instances use static upstream `options.model`. The generated route set also includes a high-priority `OPTIONS /v1/*` CORS preflight route so browser clients can call the OpenAI-compatible API. `scripts/deploy-routes.py` is the deployment pipeline that renders desired routes, applies them through the APISIX Admin API, and removes stale repo-managed routes.
+All model traffic uses the same pool abstraction. `conf/model-pools.json` is the no-secret registry for logical providers and root model resolution rules; `scripts/render-routes.py` expands it into explicit APISIX `ai-proxy-multi` routes because APISIX instances use static upstream `options.model`. The generated route set also includes a high-priority `OPTIONS /v1/*` CORS preflight route so browser clients can call the OpenAI-compatible API. `scripts/deploy-routes.py` is the deployment pipeline that renders desired routes, applies them through the APISIX Admin API, and removes stale repo-managed routes.
 
-A single-backend model is still configured as a one-instance pool. Multi-key and fallback-provider cases use explicit instance `weight`, `priority`, and gateway-level `fallback_strategy` settings. Provider-backed models are selected by public model IDs on the unified `/v1` endpoint; there are no provider-specific client URL prefixes.
+Direct provider-origin models are exposed as `origin/<provider>/<raw-provider-model-id>`, for example `origin/ollama/glm-5.1` or `origin/siliconflow-cn/Qwen/Qwen3.6-35B-A3B`. Old provider-prefixed IDs such as `ollama/glm-5.1` are not generated. Root model IDs, such as `deepseek-v4-pro`, are provider-neutral aliases generated only by explicit `root_model_rules`; their fallback targets reference canonical `origin/...` IDs.
+
+Provider deployments/accounts like `ollama-1` and `ollama-2` are hidden behind logical provider `ollama` and default to same-priority equal-weight APISIX load balancing. Root DeepSeek models prefer Ollama-hosted DeepSeek origins first and fall back to official DeepSeek origins on APISIX-supported `http_429`/`http_5xx` failures. Timeout fallback is intentionally deferred; upstream timeouts remain bounded.
 
 Current public model families:
 
-- `ollama/<upstream-model>` through Ollama Cloud, with `OLLAMA_CLOUD_KEY_1` and optional `OLLAMA_CLOUD_KEY_2` as same-priority load-balanced instances.
-- `deepseek/<upstream-model>` through the official DeepSeek API.
-- `siliconflow-cn/<upstream-model>` through SiliconFlow CN; non-chat catalog entries such as embedding/reranker/image/audio/OCR models are filtered out of the chat catalog.
-- `xai/<upstream-model>` through the official xAI API with lower instance priority for fallback-style usage.
+- `origin/ollama/<upstream-model>` through Ollama Cloud, with `OLLAMA_CLOUD_KEY_1` and optional additional keys as same-priority load-balanced deployments.
+- `origin/deepseek/<upstream-model>` through the official DeepSeek API.
+- `origin/siliconflow-cn/<upstream-model>` through SiliconFlow CN; non-chat catalog entries such as embedding/reranker/image/audio/OCR models are filtered out of the chat catalog.
+- `origin/xai/<upstream-model>` through the official xAI API.
+- Root aliases such as `deepseek-v4-pro` when configured by `root_model_rules`.
 
-Capability metadata is exposed through APISIX's own `GET /v1/model-capabilities` endpoint. Clients can consume reasoning availability, reasoning-effort choices, context windows, and related metadata without adding provider-specific branches.
+Capability metadata is exposed through APISIX's own `GET /v1/model-capabilities` endpoint. Clients can consume reasoning availability, reasoning-effort choices, context windows, and related metadata without adding provider-specific branches. Reasoning metadata is treated as model-centric: if a provider catalog omits reasoning flags, local/model-centric metadata can still describe the underlying model's reasoning support.
 
 ## Config files
 
 - `conf/config.yaml` — APISIX runtime config and enabled plugin list.
 - `conf/model-pools.json` — no-secret model pool registry used by `scripts/render-routes.py`.
-- `conf/model-capabilities.json` — final capability registry rendered into `GET /v1/model-capabilities`. Build it by converting LiteLLM's upstream `model_prices_and_context_window.json` into the APISIX shape, optionally overlaying OpenRouter provider metadata above LiteLLM, and overlaying local APISIX entries/overrides above both. Ollama Cloud capabilities still come from native `/api/show`, not this table.
+- `conf/model-capabilities.json` — final capability registry rendered into `GET /v1/model-capabilities`. Build it by converting LiteLLM's upstream `model_prices_and_context_window.json` into the APISIX shape, optionally overlaying OpenRouter provider metadata above LiteLLM, and overlaying local APISIX entries/overrides above both. Local/model-centric overrides are important for reasoning support and effort values when provider catalogs omit them.
 - `env.example` — template for provider API keys.
 - `conf/admin.key.example` — template for the Admin API key used by scripts.
 
@@ -78,17 +81,14 @@ OLLAMA_CLOUD_KEY_1=replace-me
 # Or use a comma-separated list for arbitrary-size primary pools.
 # OLLAMA_CLOUD_KEYS=key-a,key-b,key-c
 
-# Optional lower-priority fallback deployments, modeled after LiteLLM's
-# deployment/fallback split: primary instances are tried first, then fallback
-# instances are eligible after primaries are exhausted by 429/5xx/rate-limit state.
-# OLLAMA_CLOUD_FALLBACK_KEYS=fallback-key-a,fallback-key-b
+# Additional keys are same-priority deployments under logical provider `ollama`.
+# Cross-provider model fallback is configured by root_model_rules, not by key names.
 
 DEEPSEEK_API_KEY=replace-me
 XAI_API_KEY=replace-me
 SILICONFLOW_CN_API_KEY=replace-me
 
-# Keep this bounded so fallback is observable instead of looking like an infinite wait.
-# APISIX_AI_GATEWAY_TIMEOUT_MS=30000
+# Upstream timeout is configured in conf/model-pools.json router_settings.timeout.
 ```
 
 `conf/admin.key` must match `deployment.admin.admin_key[0].key` in `conf/config.yaml` unless you intentionally change both.
@@ -132,6 +132,6 @@ Then start a new Hermes process and configure:
 ```yaml
 model:
   provider: apisix
-  default: ollama/glm-5.1
+  default: origin/ollama/glm-5.1
   base_url: http://127.0.0.1:4000/v1
 ```

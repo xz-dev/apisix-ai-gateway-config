@@ -13,11 +13,13 @@ from typing import Any, Callable
 
 MANAGED_BY = "apisix-ai-gateway-config"
 REQUIRED_MODELS = {
-    "ollama/glm-5.1",
-    "deepseek/deepseek-v4-flash",
-    "deepseek/deepseek-v4-pro",
-    "siliconflow-cn/Qwen/Qwen3.6-35B-A3B",
-    "xai/grok-4.3",
+    "origin/ollama/glm-5.1",
+    "origin/deepseek/deepseek-v4-flash",
+    "origin/deepseek/deepseek-v4-pro",
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "origin/siliconflow-cn/Qwen/Qwen3.6-35B-A3B",
+    "origin/xai/grok-4.3",
 }
 NON_CHAT_MARKERS = [
     "embedding",
@@ -41,6 +43,7 @@ class VerifyContext:
     admin_routes: dict[str, Any]
     public_catalog: dict[str, Any]
     capabilities: dict[str, Any]
+    strict_live_catalog: bool
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,6 +51,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--admin-key-file", required=True)
     parser.add_argument("--admin-url", default="http://127.0.0.1:9180")
     parser.add_argument("--gateway-url", default="http://127.0.0.1:4000")
+    parser.add_argument(
+        "--strict-live-catalog",
+        action="store_true",
+        help="Fail if minimum provider catalog counts drop below expected",
+    )
     return parser.parse_args()
 
 
@@ -84,6 +92,7 @@ def load_context(args: argparse.Namespace) -> VerifyContext:
         admin_routes=request_json(f"{admin_url}/apisix/admin/routes", admin_key=admin_key),
         public_catalog=request_json(f"{gateway_url}/v1/models"),
         capabilities=request_json(f"{gateway_url}/v1/model-capabilities"),
+        strict_live_catalog=args.strict_live_catalog,
     )
 
 
@@ -117,6 +126,10 @@ def require(condition: bool, message: str) -> None:
         raise SystemExit(message)
 
 
+def route_for_public_model(ctx: VerifyContext, model_id: str) -> dict[str, Any] | None:
+    return next((r for r in pool_routes(ctx) if (r.get("labels") or {}).get("public-model") == model_id), None)
+
+
 def check_admin_routes(ctx: VerifyContext) -> None:
     routes = route_values(ctx)
     direct = [r.get("id") for r in routes if "ai-proxy" in (r.get("plugins") or {})]
@@ -134,7 +147,7 @@ def check_admin_routes(ctx: VerifyContext) -> None:
         require(cors.get("expose_headers") == "Content-Type", f"{route_id} missing CORS exposed Content-Type")
 
     pools = pool_routes(ctx)
-    require(len(pools) >= 40, f"expected managed provider pools, got only {len(pools)}")
+    require(len(pools) >= 40, f"expected managed provider/root pools, got only {len(pools)}")
     for route in pools:
         plugins = route.get("plugins") or {}
         multi = plugins.get("ai-proxy-multi") or {}
@@ -147,9 +160,10 @@ def check_admin_routes(ctx: VerifyContext) -> None:
             f"managed model route is not an ai-proxy-multi chat pool: {route.get('id')}",
         )
         fallback_strategy = multi.get("fallback_strategy") or []
+        require("rate_limiting" not in fallback_strategy, f"route should not emit rate_limiting without ai-rate-limiting: {route.get('id')}")
         require(
-            {"rate_limiting", "http_429", "http_5xx"}.issubset(set(fallback_strategy)),
-            f"route missing rate-limit/429/5xx fallback strategy: {route.get('id')}",
+            set(fallback_strategy).issubset({"http_429", "http_5xx"}),
+            f"route has unsupported fallback strategy: {route.get('id')} {fallback_strategy}",
         )
         timeout = multi.get("timeout")
         require(
@@ -171,24 +185,34 @@ def check_admin_routes(ctx: VerifyContext) -> None:
 
 
 def check_instance_priorities(ctx: VerifyContext) -> None:
-    pools = pool_routes(ctx)
-    ollama = next((r for r in pools if (r.get("labels") or {}).get("public-model") == "ollama/glm-5.1"), None)
-    require(ollama is not None, "missing ollama/glm-5.1 pool")
+    ollama = route_for_public_model(ctx, "origin/ollama/glm-5.1")
+    require(ollama is not None, "missing origin/ollama/glm-5.1 pool")
     ollama_instances = (((ollama.get("plugins") or {}).get("ai-proxy-multi") or {}).get("instances") or [])
+    require(len(ollama_instances) >= 1, "origin/ollama/glm-5.1 should have at least one configured Ollama Cloud deployment")
     require(
-        len(ollama_instances) >= 2,
-        f"ollama/glm-5.1 should have two configured Ollama Cloud instances, got {len(ollama_instances)}",
+        sorted({i.get("priority", 0) for i in ollama_instances}) == [0],
+        "Ollama Cloud deployments should share priority 0 by default",
     )
-    require(
-        sorted({i.get("priority", 0) for i in ollama_instances}) == [100],
-        "Ollama Cloud primary load-balancing instances should share priority 100",
-    )
+    require({i.get("weight") for i in ollama_instances} == {1}, "Ollama Cloud deployments should be equal-weight by default")
 
-    xai = next((r for r in pools if (r.get("labels") or {}).get("public-model") == "xai/grok-4.3"), None)
-    require(xai is not None, "missing xai/grok-4.3 fallback-provider pool")
+    root = route_for_public_model(ctx, "deepseek-v4-pro")
+    require(root is not None, "missing root deepseek-v4-pro pool")
+    labels = root.get("labels") or {}
+    require(labels.get("model-scope") == "root", "deepseek-v4-pro should be a root model route")
+    root_multi = (root.get("plugins") or {}).get("ai-proxy-multi") or {}
+    root_fallback = root_multi.get("fallback_strategy") or []
+    if "," in str(labels.get("origin-targets") or ""):
+        require(
+            {"http_429", "http_5xx"}.issubset(set(root_fallback)),
+            "root deepseek-v4-pro should use http_429/http_5xx fallback when multiple targets exist",
+        )
+        priorities = [i.get("priority") for i in root_multi.get("instances") or []]
+        require(priorities == sorted(priorities, reverse=True), "root fallback targets should be ordered by descending APISIX priority")
+
+    xai = route_for_public_model(ctx, "origin/xai/grok-4.3")
+    require(xai is not None, "missing origin/xai/grok-4.3 pool")
     xai_instances = (((xai.get("plugins") or {}).get("ai-proxy-multi") or {}).get("instances") or [{}])
-    require(xai_instances[0].get("priority") == 10, "xAI fallback-provider instance should use priority 10")
-
+    require(xai_instances[0].get("priority") == 0, "xAI origin deployment should use default same-priority deployment semantics")
 
 
 def check_cors_preflight(ctx: VerifyContext) -> None:
@@ -215,15 +239,27 @@ def check_cors_preflight(ctx: VerifyContext) -> None:
     require(allow_origin == "*", f"preflight missing Access-Control-Allow-Origin: *, got {allow_origin!r}")
     print(json.dumps({"cors_preflight_status": status, "allow_origin": allow_origin}, ensure_ascii=False, indent=2))
 
+
 def check_public_catalog(ctx: VerifyContext) -> None:
     ids = catalog_ids(ctx)
     missing = sorted(REQUIRED_MODELS.difference(ids))
     require(not missing, f"missing public models: {missing}")
-    counts = {prefix: sum(1 for model_id in ids if model_id.startswith(prefix)) for prefix in ["ollama/", "deepseek/", "siliconflow-cn/", "xai/"]}
-    require(
-        counts["ollama/"] >= 20 and counts["deepseek/"] >= 2 and counts["siliconflow-cn/"] >= 20 and counts["xai/"] >= 1,
-        f"provider catalog counts too low: {counts}",
-    )
+    counts = {
+        prefix: sum(1 for model_id in ids if model_id.startswith(prefix))
+        for prefix in ["origin/ollama/", "origin/deepseek/", "origin/siliconflow-cn/", "origin/xai/"]
+    }
+    if ctx.strict_live_catalog:
+        require(
+            counts["origin/ollama/"] >= 20
+            and counts["origin/deepseek/"] >= 2
+            and counts["origin/siliconflow-cn/"] >= 20
+            and counts["origin/xai/"] >= 1,
+            f"provider catalog counts too low: {counts}",
+        )
+    else:
+        print(f"INFO: provider catalog count check skipped (run with --strict-live-catalog to enforce): {counts}")
+    legacy_provider_ids = [model_id for model_id in ids if model_id.startswith(("ollama/", "deepseek/", "siliconflow-cn/", "xai/"))]
+    require(not legacy_provider_ids, f"legacy provider-prefixed IDs should not be generated: {legacy_provider_ids[:10]}")
     non_chat = [model_id for model_id in ids if any(marker in model_id.lower() for marker in NON_CHAT_MARKERS)]
     require(not non_chat, f"non-chat models leaked into chat catalog: {non_chat[:10]}")
     print(json.dumps({"catalog_count": len(ids), "counts": counts, "sample": ids[:8]}, ensure_ascii=False, indent=2))
@@ -232,43 +268,48 @@ def check_public_catalog(ctx: VerifyContext) -> None:
 def check_model_capabilities(ctx: VerifyContext) -> None:
     models = ctx.capabilities.get("models") or {}
     require(
-        "ollama/glm-5.1" not in models,
-        "ollama/glm-5.1 should not be in the static capability table; use Ollama /api/show instead",
+        "deepseek/deepseek-v4-pro" not in models,
+        "legacy provider-prefixed capability IDs should be mapped to origin/root IDs in the served payload",
     )
-    deepseek = models.get("deepseek/deepseek-v4-pro") or {}
+    root = models.get("deepseek-v4-pro") or {}
+    root_reasoning = root.get("reasoning") or {}
+    require(root_reasoning.get("enabled") is True, "root deepseek-v4-pro should expose reasoning.enabled=true")
+    require(
+        {"high", "max"}.issubset(set(root_reasoning.get("efforts") or [])),
+        "root deepseek-v4-pro should expose high/max reasoning efforts",
+    )
+
+    deepseek = models.get("origin/deepseek/deepseek-v4-pro") or {}
     deepseek_reasoning = deepseek.get("reasoning") or {}
     if deepseek:
-        require(deepseek_reasoning.get("enabled") is True, "deepseek/deepseek-v4-pro should expose reasoning.enabled=true")
-        require(
-            {"high", "max"}.issubset(set(deepseek_reasoning.get("efforts") or [])),
-            "deepseek/deepseek-v4-pro should expose high/max reasoning efforts",
-        )
-    xai = models.get("xai/grok-4.3") or {}
+        require(deepseek_reasoning.get("enabled") is True, "origin/deepseek/deepseek-v4-pro should expose reasoning.enabled=true")
+
+    xai = models.get("origin/xai/grok-4.3") or {}
     xai_reasoning = xai.get("reasoning") or {}
     if xai:
-        require(xai_reasoning.get("enabled") is True, "xai/grok-4.3 should expose reasoning.enabled=true")
+        require(xai_reasoning.get("enabled") is True, "origin/xai/grok-4.3 should expose reasoning.enabled=true")
         require(
             {"low", "medium", "high"}.issubset(set(xai_reasoning.get("efforts") or [])),
-            "xai/grok-4.3 should expose low/medium/high reasoning efforts",
+            "origin/xai/grok-4.3 should expose low/medium/high reasoning efforts",
         )
-    qwen = models.get("siliconflow-cn/Qwen/Qwen3.6-35B-A3B") or {}
+    qwen = models.get("origin/siliconflow-cn/Qwen/Qwen3.6-35B-A3B") or {}
     qwen_reasoning = qwen.get("reasoning") or {}
     require(
         qwen_reasoning.get("enabled") is True,
-        "siliconflow-cn/Qwen/Qwen3.6-35B-A3B should expose OpenRouter-derived reasoning.enabled=true",
+        "origin/siliconflow-cn/Qwen/Qwen3.6-35B-A3B should expose model-centric reasoning.enabled=true",
     )
     require(
         {"minimal", "high", "xhigh"}.issubset(set(qwen_reasoning.get("efforts") or [])),
-        "siliconflow-cn/Qwen/Qwen3.6-35B-A3B should expose OpenRouter-derived reasoning efforts",
+        "origin/siliconflow-cn/Qwen/Qwen3.6-35B-A3B should expose model-centric reasoning efforts",
     )
     print(
         json.dumps(
             {
                 "capability_count": len(models),
-                "static_ollama_capability_present": "ollama/glm-5.1" in models,
-                "deepseek_reasoning_efforts": deepseek_reasoning.get("efforts"),
-                "xai_reasoning_efforts": xai_reasoning.get("efforts"),
-                "siliconflow_qwen_reasoning_efforts": qwen_reasoning.get("efforts"),
+                "root_deepseek_reasoning_efforts": root_reasoning.get("efforts"),
+                "origin_deepseek_reasoning_efforts": deepseek_reasoning.get("efforts"),
+                "origin_xai_reasoning_efforts": xai_reasoning.get("efforts"),
+                "origin_siliconflow_qwen_reasoning_efforts": qwen_reasoning.get("efforts"),
             },
             ensure_ascii=False,
             indent=2,

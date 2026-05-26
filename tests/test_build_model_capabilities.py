@@ -457,3 +457,63 @@ def test_generated_base_entries_do_not_become_local_overrides_on_rerun(tmp_path:
         "param": "reasoning_effort",
         "efforts": ["low", "high"],
     }
+
+
+def test_public_origin_catalog_keeps_model_centric_reasoning_aliases(tmp_path: Path):
+    litellm = tmp_path / "model_prices_and_context_window.json"
+    openrouter = tmp_path / "openrouter-models.json"
+    catalog = tmp_path / "public-catalog.json"
+    base = tmp_path / "model-capabilities.base.json"
+    output = tmp_path / "model-capabilities.json"
+
+    litellm.write_text(
+        json.dumps(
+            {
+                "deepseek/deepseek-v4-pro": {
+                    "mode": "chat",
+                    "supports_reasoning": True,
+                    "supports_max_reasoning_effort": True,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    openrouter.write_text(json.dumps({"data": []}), encoding="utf-8")
+    catalog.write_text(
+        json.dumps(
+            {
+                "data": [
+                    {"id": "origin/ollama/deepseek-v4-pro"},
+                    {"id": "origin/deepseek/deepseek-v4-pro"},
+                    {"id": "deepseek-v4-pro"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    base.write_text('{"version":1,"models":{}}', encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--base",
+            str(base),
+            "--litellm",
+            str(litellm),
+            "--openrouter",
+            str(openrouter),
+            "--public-catalog",
+            str(catalog),
+            "--output",
+            str(output),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    data = json.loads(output.read_text(encoding="utf-8"))
+    assert data["models"]["deepseek/deepseek-v4-pro"]["reasoning"]["efforts"] == ["max"]

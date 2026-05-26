@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+
+import pytest
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -82,3 +84,24 @@ def test_deploy_pipeline_puts_desired_routes_and_deletes_stale(tmp_path, monkeyp
         ("delete", "http://admin.example", "secret", "stale"),
     ]
     assert "1 public models, 2 managed routes" in capsys.readouterr().out
+
+
+def test_deploy_does_not_touch_apisix_on_render_failure(tmp_path, monkeypatch):
+    admin_key = tmp_path / "admin.key"
+    admin_key.write_text("secret\n", encoding="utf-8")
+
+    def failing_render_routes(*_args, **_kwargs):
+        raise SystemExit("render failed")
+
+    monkeypatch.setattr(deploy_routes, "render_routes", failing_render_routes)
+
+    args = SimpleNamespace(
+        registry="registry.json",
+        capabilities=None,
+        admin_key_file=str(admin_key),
+        admin_url="http://admin.example/",
+        catalog_timeout=20.0,
+    )
+
+    with pytest.raises(SystemExit):
+        deploy_routes.deploy(args)

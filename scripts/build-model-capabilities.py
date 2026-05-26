@@ -242,14 +242,49 @@ def public_catalog_model_ids(payload: dict[str, Any]) -> list[str]:
     return model_ids
 
 
+def origin_parts(model_id: str) -> tuple[str, str] | None:
+    prefix = "origin/"
+    if not model_id.startswith(prefix):
+        return None
+    rest = model_id[len(prefix) :]
+    parts = rest.split("/", 1)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        return None
+    return parts[0], parts[1]
+
+
+def capability_source_ids_for_public_ids(public_model_ids: list[str]) -> set[str]:
+    """Return public IDs plus model-centric aliases to query upstream tables.
+
+    The v2 gateway catalog exposes origin IDs and root aliases, while upstream
+    metadata sources commonly use provider-prefixed IDs (``deepseek/model``) or
+    raw model IDs. Querying those aliases keeps reasoning metadata model-centric
+    instead of treating missing provider-origin metadata as lack of support.
+    """
+
+    source_ids = set(public_model_ids)
+    for public_model_id in public_model_ids:
+        parsed = origin_parts(public_model_id)
+        if not parsed:
+            continue
+        provider_id, raw_model_id = parsed
+        source_ids.add(f"{provider_id}/{raw_model_id}")
+        source_ids.add(raw_model_id)
+    return source_ids
+
+
 def siliconflow_alias_for_openrouter(openrouter_model_id: str, public_model_ids: list[str]) -> str | None:
     openrouter_lower = openrouter_model_id.lower()
     for public_model_id in public_model_ids:
-        prefix = "siliconflow-cn/"
-        if not public_model_id.lower().startswith(prefix):
-            continue
-        if public_model_id[len(prefix) :].lower() == openrouter_lower:
-            return public_model_id
+        legacy_prefix = "siliconflow-cn/"
+        origin_prefix = "origin/siliconflow-cn/"
+        public_lower = public_model_id.lower()
+        if public_lower.startswith(origin_prefix):
+            if public_model_id[len(origin_prefix) :].lower() == openrouter_lower:
+                return public_model_id
+        elif public_lower.startswith(legacy_prefix):
+            if public_model_id[len(legacy_prefix) :].lower() == openrouter_lower:
+                return public_model_id
     return None
 
 
@@ -287,16 +322,18 @@ def main() -> int:
     base_models: dict[str, Any] = raw_base_models if isinstance(raw_base_models, dict) else {}
     only_models = set(args.only_model or [])
     public_model_ids: list[str] | None = None
+    source_model_ids = capability_source_ids_for_public_ids(sorted(only_models)) if only_models else set()
     if args.public_catalog:
         catalog_payload = load_json(args.public_catalog)
         public_model_ids = public_catalog_model_ids(catalog_payload)
         if not only_models:
             only_models = set(public_model_ids)
-    models = converted_litellm_models(table, only_models)
+        source_model_ids = capability_source_ids_for_public_ids(sorted(only_models))
+    models = converted_litellm_models(table, source_model_ids)
     openrouter_siliconflow_fallback_count = 0
     if args.openrouter:
         openrouter_payload = load_json(args.openrouter)
-        openrouter_models = converted_openrouter_models(openrouter_payload, only_models)
+        openrouter_models = converted_openrouter_models(openrouter_payload, source_model_ids)
         if args.public_catalog:
             fallback_models = converted_openrouter_siliconflow_fallbacks(
                 converted_openrouter_models(openrouter_payload, set()),

@@ -12,7 +12,7 @@ from hermes_cli.models import provider_model_ids
 from providers import get_provider_profile
 models = provider_model_ids('apisix')
 profile_models = get_provider_profile('apisix').fetch_models(timeout=5)
-required = {'ollama/glm-5.1', 'deepseek/deepseek-v4-flash', 'siliconflow-cn/Qwen/Qwen3.6-35B-A3B', 'xai/grok-4.3'}
+required = {'origin/ollama/glm-5.1', 'deepseek-v4-flash', 'origin/siliconflow-cn/Qwen/Qwen3.6-35B-A3B', 'origin/xai/grok-4.3'}
 missing = required.difference(models or [])
 print({'provider_model_count': len(models or []), 'profile_fetch_model_count': len(profile_models or []), 'required_present': not missing})
 if missing:
@@ -49,7 +49,7 @@ PY
 }
 
 echo '--- semantic checks across providers ---'
-check_model 'ollama/glm-5.1' 'APISIX_OK'
-check_model 'deepseek/deepseek-v4-flash' 'DEEPSEEK_OK'
-check_model 'siliconflow-cn/Qwen/Qwen3.6-35B-A3B' 'SILICONFLOW_OK'
-check_model 'xai/grok-4.3' 'XAI_OK'
+check_model 'origin/ollama/glm-5.1' 'APISIX_OK'
+check_model 'deepseek-v4-flash' 'DEEPSEEK_OK'
+check_model 'origin/siliconflow-cn/Qwen/Qwen3.6-35B-A3B' 'SILICONFLOW_OK'
+check_model 'origin/xai/grok-4.3' 'XAI_OK'

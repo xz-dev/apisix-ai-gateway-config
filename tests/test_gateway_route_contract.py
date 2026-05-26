@@ -1,10 +1,9 @@
 """Contract tests for APISIX gateway route generation.
 
-The regression class is: a request lands on an exhausted/limited upstream
-account and then waits instead of falling through to another deployment. These
-contracts assert that the declarative renderer builds one ai-proxy-multi pool
-per public model, supports arbitrary primary/fallback credentials, and keeps
-upstream timeouts bounded.
+The regression class is: model routing, account load balancing, and approved
+root-model fallback become implicit or untestable. These contracts assert that
+renderer output uses canonical origin IDs, explicit root routes, bounded APISIX
+fallback semantics, and deterministic route IDs.
 """
 
 from __future__ import annotations
@@ -25,32 +24,29 @@ def _provider(**overrides):
     data = {
         "id": "ollama",
         "owned_by": "ollama-cloud",
-        "public_prefix": "ollama/",
         "chat_endpoint": "https://ollama.com/v1/chat/completions",
         "driver": "openai-compatible",
         "env_var_prefixes": ["OLLAMA_CLOUD_KEY"],
-        "fallback_env_var_prefixes": ["OLLAMA_CLOUD_FALLBACK_KEY"],
         "required_env_vars": [],
-        "instance_priority": 100,
-        "fallback_instance_priority": 0,
-        "fallback_models": ["glm-5.1"],
+        "instance_priority": 0,
+        "catalog_fallback_models": ["glm-5.1"],
         "route_priority": 200,
     }
     data.update(overrides)
     return data
 
 
-def _render(tmp_path: Path, registry: dict, env: dict[str, str]) -> tuple[dict[str, dict], dict]:
+def _render(tmp_path: Path, registry: dict, env: dict[str, str], capabilities: dict | None = None) -> tuple[dict[str, dict], dict]:
     registry_path = tmp_path / "model-pools.json"
     out_dir = tmp_path / "out"
     manifest_path = tmp_path / "manifest.json"
     capabilities_path = tmp_path / "model-capabilities.json"
     registry_path.write_text(json.dumps(registry), encoding="utf-8")
-    capabilities_path.write_text('{"version":1,"models":{}}', encoding="utf-8")
+    capabilities_path.write_text(json.dumps(capabilities or {"version": 1, "models": {}}), encoding="utf-8")
 
     run_env = os.environ.copy()
     for key in list(run_env):
-        if key.startswith("OLLAMA_CLOUD_KEY") or key.startswith("OLLAMA_CLOUD_FALLBACK_KEY"):
+        if key.startswith("OLLAMA_CLOUD_KEY") or key.startswith("DEEPSEEK_KEY"):
             run_env.pop(key, None)
     run_env.update(env)
 
@@ -83,27 +79,35 @@ def _render(tmp_path: Path, registry: dict, env: dict[str, str]) -> tuple[dict[s
 
 def _registry(**overrides):
     data = {
-        "version": 1,
+        "version": 2,
         "router_settings": {
             "algorithm": "roundrobin",
-            "fallback_strategy": ["rate_limiting", "http_429", "http_5xx"],
+            "fallback_strategy": ["http_429", "http_5xx"],
             "timeout": 30000,
         },
+        "root_model_rules": [],
         "providers": [_provider()],
     }
     data.update(overrides)
     return data
 
 
-def _pool(routes: dict[str, dict]) -> dict:
-    return routes["pool-ollama-glm-5-1"]["plugins"]["ai-proxy-multi"]
+def _route_by_model(routes: dict[str, dict], model_id: str) -> dict:
+    for route in routes.values():
+        if (route.get("labels") or {}).get("public-model") == model_id:
+            return route
+    raise AssertionError(f"missing route for {model_id}")
+
+
+def _pool(routes: dict[str, dict], model_id: str = "origin/ollama/glm-5.1") -> dict:
+    return _route_by_model(routes, model_id)["plugins"]["ai-proxy-multi"]
 
 
 def _instance_names(pool: dict) -> list[str]:
     return [item["name"] for item in pool["instances"]]
 
 
-def test_pool_accepts_arbitrary_number_of_primary_ollama_accounts(tmp_path: Path):
+def test_origin_pool_accepts_arbitrary_number_of_primary_ollama_accounts(tmp_path: Path):
     routes, _ = _render(
         tmp_path,
         _registry(),
@@ -114,10 +118,10 @@ def test_pool_accepts_arbitrary_number_of_primary_ollama_accounts(tmp_path: Path
     instances = pool["instances"]
 
     assert pool["balancer"] == {"algorithm": "roundrobin"}
-    assert pool["fallback_strategy"] == ["rate_limiting", "http_429", "http_5xx"]
+    assert pool["fallback_strategy"] == ["http_429", "http_5xx"]
     assert _instance_names(pool) == ["ollama-1", "ollama-2", "ollama-3"]
     assert {item["weight"] for item in instances} == {1}
-    assert {item["priority"] for item in instances} == {100}
+    assert {item["priority"] for item in instances} == {0}
     assert {item["options"]["model"] for item in instances} == {"glm-5.1"}
     assert [item["auth"]["header"]["Authorization"] for item in instances] == [
         "Bearer ollama-key-a",
@@ -126,28 +130,12 @@ def test_pool_accepts_arbitrary_number_of_primary_ollama_accounts(tmp_path: Path
     ]
 
 
-def test_pool_accepts_arbitrary_number_of_lower_priority_fallback_accounts(tmp_path: Path):
-    routes, _ = _render(
-        tmp_path,
-        _registry(),
-        {
-            "OLLAMA_CLOUD_KEY_1": "primary-a",
-            "OLLAMA_CLOUD_KEY_2": "primary-b",
-            "OLLAMA_CLOUD_FALLBACK_KEYS": "fallback-a,fallback-b,fallback-c",
-        },
-    )
+def test_single_instance_origin_route_omits_fallback_strategy(tmp_path: Path):
+    routes, _ = _render(tmp_path, _registry(), {"OLLAMA_CLOUD_KEY_1": "primary-a"})
 
     pool = _pool(routes)
 
-    assert _instance_names(pool) == [
-        "ollama-1",
-        "ollama-2",
-        "ollama-fallback-1",
-        "ollama-fallback-2",
-        "ollama-fallback-3",
-    ]
-    assert [item["priority"] for item in pool["instances"]] == [100, 100, 0, 0, 0]
-    assert pool["fallback_strategy"] == ["rate_limiting", "http_429", "http_5xx"]
+    assert "fallback_strategy" not in pool
 
 
 def test_every_chat_route_uses_ai_proxy_multi_pool_even_single_instance_routes(tmp_path: Path):
@@ -163,34 +151,126 @@ def test_every_chat_route_uses_ai_proxy_multi_pool_even_single_instance_routes(t
         assert len(plugins["ai-proxy-multi"].get("instances") or []) >= 1
 
 
-def test_pool_has_bounded_upstream_timeout_so_fallback_is_observable(tmp_path: Path):
+def test_pool_has_bounded_upstream_timeout_so_failures_are_observable(tmp_path: Path):
     routes, _ = _render(tmp_path, _registry(), {"OLLAMA_CLOUD_KEY_1": "primary-a"})
 
     timeout_ms = _pool(routes).get("timeout")
 
     assert isinstance(timeout_ms, int)
-    assert timeout_ms <= 60_000, "fallback cannot rescue exhausted accounts if each bad upstream waits for minutes"
+    assert timeout_ms <= 60_000, "APISIX timeout fallback is deferred, so bad upstream waits must stay bounded"
 
 
-def test_managed_chat_routes_have_exact_model_matcher_and_managed_label(tmp_path: Path):
+def test_managed_origin_chat_routes_have_exact_model_matcher_and_managed_label(tmp_path: Path):
     routes, _ = _render(tmp_path, _registry(), {"OLLAMA_CLOUD_KEY_1": "primary-a"})
 
-    main = routes["pool-ollama-glm-5-1"]
+    main = _route_by_model(routes, "origin/ollama/glm-5.1")
 
     assert main.get("labels", {}).get("managed-by") == MANAGED_BY
-    assert ["post_arg.model", "==", "ollama/glm-5.1"] in main.get("vars", [])
+    assert main.get("labels", {}).get("model-scope") == "origin"
+    assert ["post_arg.model", "==", "origin/ollama/glm-5.1"] in main.get("vars", [])
 
 
-def test_models_catalog_matches_public_model_ids_used_by_chat_routes(tmp_path: Path):
+def test_models_catalog_matches_origin_model_ids_used_by_chat_routes(tmp_path: Path):
     routes, manifest = _render(tmp_path, _registry(), {"OLLAMA_CLOUD_KEY_1": "primary-a"})
 
     main_catalog = json.loads(routes["main-models"]["plugins"]["mocking"]["response_example"])
     public_ids = {item["id"] for item in main_catalog["data"]}
 
-    assert manifest["models"] == ["ollama/glm-5.1"]
-    assert public_ids == {"ollama/glm-5.1"}
-    assert ["post_arg.model", "==", "ollama/glm-5.1"] in routes["pool-ollama-glm-5-1"].get("vars", [])
+    assert manifest["models"] == ["origin/ollama/glm-5.1"]
+    assert public_ids == {"origin/ollama/glm-5.1"}
+    assert "ollama/glm-5.1" not in public_ids
+    assert ["post_arg.model", "==", "origin/ollama/glm-5.1"] in _route_by_model(routes, "origin/ollama/glm-5.1").get("vars", [])
 
+
+def test_root_route_expands_fallback_chain_into_priority_tiers(tmp_path: Path):
+    deepseek_provider = _provider(
+        id="deepseek",
+        owned_by="deepseek-official",
+        driver="deepseek",
+        env_vars=["DEEPSEEK_KEY"],
+        env_var_prefixes=[],
+        required_env_vars=["DEEPSEEK_KEY"],
+        catalog_fallback_models=["deepseek-v4-pro"],
+    )
+    root_rule = {
+        "id": "deepseek-series",
+        "match_regex": "^(?P<model>deepseek-.+)$",
+        "model_template": "{model}",
+        "target_templates": ["origin/ollama/{model}", "origin/deepseek/{model}"],
+        "fallback_strategy": ["http_429", "http_5xx"],
+    }
+    routes, manifest = _render(
+        tmp_path,
+        _registry(
+            providers=[
+                _provider(catalog_fallback_models=["deepseek-v4-pro"]),
+                deepseek_provider,
+            ],
+            root_model_rules=[root_rule],
+        ),
+        {"OLLAMA_CLOUD_KEY_1": "ollama-key", "DEEPSEEK_KEY": "deepseek-key"},
+    )
+
+    assert "deepseek-v4-pro" in manifest["models"]
+    root = _route_by_model(routes, "deepseek-v4-pro")
+    pool = root["plugins"]["ai-proxy-multi"]
+    assert root["labels"]["model-scope"] == "root"
+    assert root["labels"]["origin-targets"] == "origin/ollama/deepseek-v4-pro,origin/deepseek/deepseek-v4-pro"
+    assert pool["fallback_strategy"] == ["http_429", "http_5xx"]
+    assert "rate_limiting" not in pool["fallback_strategy"]
+    assert [instance["priority"] for instance in pool["instances"]] == [1000, 999]
+    assert [instance["provider"] for instance in pool["instances"]] == ["openai-compatible", "deepseek"]
+
+    origin = _pool(routes, "origin/ollama/deepseek-v4-pro")
+    assert {instance["provider"] for instance in origin["instances"]} == {"openai-compatible"}
+
+
+def test_root_capability_uses_first_reasoning_metadata_available_in_target_order(tmp_path: Path):
+    deepseek_provider = _provider(
+        id="deepseek",
+        owned_by="deepseek-official",
+        driver="deepseek",
+        env_vars=["DEEPSEEK_KEY"],
+        env_var_prefixes=[],
+        required_env_vars=["DEEPSEEK_KEY"],
+        catalog_fallback_models=["deepseek-v4-pro"],
+    )
+    capabilities = {
+        "version": 1,
+        "models": {
+            "deepseek/deepseek-v4-pro": {
+                "source": "local:model-centric:deepseek-v4-pro",
+                "context_window": 1000000,
+                "reasoning": {
+                    "enabled": True,
+                    "param": "reasoning_effort",
+                    "efforts": ["low", "medium", "high", "xhigh", "max"],
+                },
+            }
+        },
+    }
+    root_rule = {
+        "id": "deepseek-series",
+        "match_regex": "^(?P<model>deepseek-.+)$",
+        "target_templates": ["origin/ollama/{model}", "origin/deepseek/{model}"],
+    }
+    routes, _ = _render(
+        tmp_path,
+        _registry(
+            providers=[
+                _provider(catalog_fallback_models=["deepseek-v4-pro"]),
+                deepseek_provider,
+            ],
+            root_model_rules=[root_rule],
+        ),
+        {"OLLAMA_CLOUD_KEY_1": "ollama-key", "DEEPSEEK_KEY": "deepseek-key"},
+        capabilities,
+    )
+
+    payload = json.loads(routes["main-model-capabilities"]["plugins"]["mocking"]["response_example"])
+    models = payload["models"]
+    assert models["origin/ollama/deepseek-v4-pro"]["reasoning"]["enabled"] is True
+    assert models["deepseek-v4-pro"]["reasoning"]["efforts"] == ["low", "medium", "high", "xhigh", "max"]
 
 
 def test_cors_preflight_route_is_high_priority_and_not_model_gated(tmp_path: Path):

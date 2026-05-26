@@ -1,6 +1,6 @@
 # model-pools.json Field Reference
 
-`conf/model-pools.json` is the no-secret source of truth for generated APISIX model pool routes. It is intentionally explicit: fields with defaults are kept in the checked-in example so the file also works as configuration reference.
+`conf/model-pools.json` is the no-secret source of truth for generated APISIX AI Gateway routes. Version 2 separates direct provider-origin routing from root namespace model resolution so fallback is explicit and testable.
 
 `model-pools.json` does not contain provider API keys. It contains environment variable names. `scripts/configure-routes.sh` loads `.env`, and `scripts/render-routes.py` resolves those names when rendering Admin API route JSON.
 
@@ -8,9 +8,10 @@
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "description": "Managed public model pools for the local APISIX AI gateway.",
   "router_settings": {},
+  "root_model_rules": [],
   "providers": []
 }
 ```
@@ -19,20 +20,45 @@
 
 | Field | Type | Required | Purpose |
 | --- | --- | --- | --- |
-| `version` | integer | yes | Registry format version. Current value is `1`. |
+| `version` | integer | yes | Registry format version. Current value is `2`. |
 | `description` | string | no | Human-readable explanation of the registry. |
-| `router_settings` | object | yes | Defaults applied to every generated `ai-proxy-multi` route. |
-| `providers` | array | yes | Provider catalog definitions. Each provider expands into one public route per exposed model. |
+| `router_settings` | object | yes | Defaults applied to generated `ai-proxy-multi` routes. |
+| `root_model_rules` | array | no | Render-time root namespace model rules. These generate provider-neutral model IDs such as `deepseek-v4-pro`. |
+| `providers` | array | yes | Logical provider definitions. Each provider expands catalog entries into direct `origin/<provider>/<raw-model-id>` routes. |
+
+## Model ID namespaces
+
+### Origin Model IDs
+
+Every provider catalog model is exposed directly as:
+
+```text
+origin/<logical-provider>/<raw-provider-model-id>
+```
+
+Examples:
+
+```text
+origin/ollama/glm-5.1
+origin/deepseek/deepseek-v4-pro
+origin/siliconflow-cn/Qwen/Qwen3.6-35B-A3B
+```
+
+The raw provider model ID begins after the provider segment and may contain `/` characters. Old provider-prefixed IDs such as `ollama/glm-5.1` are **not** generated as compatibility aliases.
+
+### Root Model IDs
+
+Any generated model ID that does not start with `origin/` is a root model ID. Root IDs are provider-neutral names such as `deepseek-v4-pro`; they are generated only by explicit `root_model_rules`. A root route may fall back across approved origin targets, but an explicit `origin/...` request is provider-pinned and never crosses providers.
 
 ## router_settings
 
-These fields become the shared `plugins.ai-proxy-multi` settings for generated model routes.
+These fields become shared `plugins.ai-proxy-multi` settings.
 
 | Field | Type | Current default | Purpose |
 | --- | --- | --- | --- |
-| `algorithm` | string | `roundrobin` | Load-balancer algorithm for instances with the same priority. |
-| `fallback_strategy` | array of strings | `["http_429", "http_5xx"]` | Conditions that allow APISIX to retry/fall back to another instance. |
-| `timeout` | integer | `600000` | Upstream request timeout in milliseconds. Long LLM calls need a larger timeout than normal APIs. |
+| `algorithm` | string | `roundrobin` | Load-balancer algorithm for instances with the same priority. Valid values: `roundrobin`, `chash`. |
+| `fallback_strategy` | array of strings | `["http_429", "http_5xx"]` | Same-provider account fallback conditions for routes with more than one instance. `rate_limiting` is intentionally not emitted unless real `ai-rate-limiting` config is added later. |
+| `timeout` | integer | `30000` | Upstream request timeout in milliseconds. Timeout fallback is deferred because APISIX 3.15 `ai-proxy-multi` documents HTTP 429/5xx fallback, not a `timeout` fallback strategy. |
 | `keepalive` | boolean | `true` | Whether to reuse upstream connections. |
 | `keepalive_timeout` | integer | `60000` | Upstream keepalive timeout in milliseconds. |
 | `keepalive_pool` | integer | `30` | Upstream keepalive connection pool size. |
@@ -44,7 +70,7 @@ Example:
 "router_settings": {
   "algorithm": "roundrobin",
   "fallback_strategy": ["http_429", "http_5xx"],
-  "timeout": 600000,
+  "timeout": 30000,
   "keepalive": true,
   "keepalive_timeout": 60000,
   "keepalive_pool": 30,
@@ -54,42 +80,74 @@ Example:
 
 ## providers[]
 
-Each provider entry describes one upstream provider/catalog and how to expose its models as public APISIX model IDs.
+Each provider entry describes one logical provider/catalog and how to expose its raw models as origin routes.
 
 | Field | Type | Required | Purpose |
 | --- | --- | --- | --- |
-| `id` | string | yes | Stable provider identifier used in route labels and instance names. Example: `ollama`, `deepseek`, `siliconflow-cn`, `xai`. |
-| `owned_by` | string | yes | Value used in generated `/v1/models` entries. This is client-facing catalog metadata only. |
-| `public_prefix` | string | yes | Prefix prepended to upstream model IDs to form public model IDs. Example: `ollama/` + `glm-5.1` -> `ollama/glm-5.1`. |
-| `upstream_prefix` | string | no | Prefix prepended to upstream model IDs before sending to the provider. Keep explicit as `""` when upstream uses raw catalog IDs. |
-| `catalog_url` | string | no | Provider model catalog endpoint. If absent, `fallback_models` is used. If present and fetch fails, fallback is allowed only when `allow_catalog_fallback` is explicitly `true`. |
-| `allow_catalog_fallback` | boolean | no | Explicit opt-in for using `fallback_models` after a catalog fetch failure. Defaults to `false` so catalog failures fail fast. |
+| `id` | string | yes | Stable logical provider identifier. Example: `ollama`, `deepseek`, `siliconflow-cn`, `xai`. |
+| `owned_by` | string | yes | Value used in generated `/v1/models` entries for origin IDs. |
+| `upstream_prefix` | string | no | Prefix prepended to raw provider model IDs before sending to the provider. Keep explicit as `""` when upstream uses raw catalog IDs. |
+| `catalog_url` | string | no | Provider model catalog endpoint. If absent, `catalog_fallback_models` is used as the static catalog. |
+| `catalog_fallback_models` | array of strings | yes | Static provider model IDs used when **no** `catalog_url` is configured. Optionally also used for an explicit degraded-catalog mode if `allow_catalog_fallback` is enabled. They are **not** runtime model fallback policy. |
+| `allow_catalog_fallback` | boolean | no | Explicit opt-in for using `catalog_fallback_models` after a live catalog fetch failure. Defaults to `false` so failed renders abort and keep the last-good deployed route set. |
 | `chat_endpoint` | string | yes | Provider chat completions endpoint used as `instances[].override.endpoint`. |
-| `driver` | string | yes | APISIX AI provider driver for generated instances. Examples: `openai-compatible`, `deepseek`. |
-| `env_vars` | array of strings | yes | Ordered API key environment variable names. Each present env var creates one upstream instance. Multiple values create load-balanced/fallback-capable instances. |
+| `driver` | string | yes | APISIX AI provider driver. Examples: `openai-compatible`, `deepseek`. |
+| `env_vars` | array of strings | yes | Ordered API key environment variable names. Each present env var creates one provider deployment. |
+| `env_var_prefixes` | array of strings | no | Prefixes used for numbered variables (`PREFIX_1`) and comma-separated lists (`PREFIXS`). |
 | `required_env_vars` | array of strings | yes | Env vars that must be present before rendering. Use this for minimum viable provider availability. |
-| `instance_priority` | integer | yes | Priority assigned to generated instances. Lower priority is preferred by APISIX; higher values are fallback tiers. |
-| `instance_weight` | integer | yes | Weight assigned to generated instances with the same priority. Used by the configured load-balancer algorithm. |
-| `fallback_models` | array of strings | yes | Static model IDs used when `catalog_url` is absent or cannot be fetched. Also documents must-have models. |
+| `instance_priority` | integer | yes | APISIX instance priority for deployments under this provider. Higher numeric priority wins. In v2, provider deployments default to the same priority for equal load balancing. |
+| `instance_weight` | integer | yes | Weight assigned to instances with the same priority. Used by the configured load-balancer algorithm. |
 | `include_model_patterns` | array of regex strings | no | Optional allowlist. If present, only catalog model IDs matching at least one regex are exposed. |
-| `exclude_model_patterns` | array of regex strings | no | Optional denylist. Any catalog model ID matching a regex is filtered out. Useful for removing embeddings, rerankers, image, audio, video, OCR, and other non-chat models. |
-| `route_priority` | integer | yes | APISIX route priority for generated chat routes. Kept explicit so route matching behavior is visible and tunable. |
+| `exclude_model_patterns` | array of regex strings | no | Optional denylist. Any catalog model ID matching a regex is filtered out. |
+| `route_priority` | integer | yes | APISIX route priority for generated origin chat routes. |
+
+## root_model_rules[]
+
+Root model rules are evaluated at render time against raw provider model IDs from generated origin routes. They produce explicit APISIX routes; APISIX does not dynamically regex-capture model names at request time.
+
+| Field | Type | Required | Purpose |
+| --- | --- | --- | --- |
+| `id` | string | no | Stable rule identifier used in route labels. |
+| `match_regex` | string | yes | Python regex matched against raw provider model IDs. Use named capture `(?P<model>...)` or rely on the first capture group/whole match as `{model}`. |
+| `model_template` | string | no | Template for the root model ID. Defaults to `{model}`. The result must not start with `origin/`. |
+| `target_templates` | array of strings | yes | Ordered origin model templates such as `origin/ollama/{model}`. Missing targets are skipped; no arbitrary targets are invented. |
+| `fallback_strategy` | array of strings | no | APISIX-supported runtime fallback conditions for the generated root route, currently `http_429` and `http_5xx`. Emitted only when the route has more than one instance. |
+| `route_priority` | integer | no | APISIX route priority for generated root chat routes. Default `500`. |
+| `owned_by` | string | no | Value used in `/v1/models` for root IDs. Default `apisix-root`. |
+
+DeepSeek root rule example:
+
+```json
+{
+  "id": "deepseek-series-ollama-official",
+  "match_regex": "^(?P<model>deepseek-.+)$",
+  "model_template": "{model}",
+  "target_templates": [
+    "origin/ollama/{model}",
+    "origin/deepseek/{model}"
+  ],
+  "fallback_strategy": ["http_429", "http_5xx"],
+  "route_priority": 500,
+  "owned_by": "apisix-root"
+}
+```
+
+For `deepseek-v4-pro`, this renders a root route that tries `origin/ollama/deepseek-v4-pro` first and then `origin/deepseek/deepseek-v4-pro` on APISIX-supported 429/5xx failures. The direct route `origin/ollama/deepseek-v4-pro` remains provider-pinned.
 
 ## Generated route behavior
 
-For every exposed model, `scripts/render-routes.py` emits one `POST /v1/chat/completions` route:
+For every exposed origin or root model, `scripts/render-routes.py` emits one `POST /v1/chat/completions` route:
 
 ```json
 {
   "uri": "/v1/chat/completions",
   "methods": ["POST"],
-  "priority": 200,
-  "vars": [["post_arg.model", "==", "ollama/glm-5.1"]],
+  "vars": [["post_arg.model", "==", "origin/ollama/glm-5.1"]],
   "plugins": {
     "ai-proxy-multi": {
       "instances": [],
       "balancer": {"algorithm": "roundrobin"},
-      "fallback_strategy": ["http_429", "http_5xx"]
+      "timeout": 30000
     }
   }
 }
@@ -98,60 +156,17 @@ For every exposed model, `scripts/render-routes.py` emits one `POST /v1/chat/com
 Important invariants:
 
 - Every model request goes through `ai-proxy-multi`.
-- A model with one upstream key is still represented as a one-instance pool.
 - Model selection is based on exact `post_arg.model == <public_model_id>` matching.
+- Origin routes include only deployments from their logical provider.
+- Root routes expand ordered origin targets into APISIX instance priority tiers; earlier targets get higher numeric priority.
+- A model with one upstream key is still represented as a one-instance pool, but `fallback_strategy` is emitted only when there is another instance to try.
 - Provider API keys are not committed; rendered routes receive `Authorization: Bearer <token>` from `.env` at configure time.
-- `GET /v1/models` is generated from the same public model catalog.
-- `GET /v1/model-capabilities` is generated from the final `conf/model-capabilities.json`, filtered to public models present in the generated catalog. Build that file by converting LiteLLM's upstream `model_prices_and_context_window.json` into APISIX capability shape, optionally overlaying OpenRouter provider metadata above LiteLLM, and overlaying local APISIX entries/overrides above both. Ollama Cloud reasoning/tools/vision/context metadata should still be queried from native `/api/show` instead.
+- `GET /v1/models` is generated from the same origin + root catalog.
+- `GET /v1/model-capabilities` maps origin IDs from provider-prefixed, raw-model, or explicit origin metadata where available. Root IDs use the first useful capability metadata in target order, preferring entries with reasoning support and reasoning effort values.
 
-## Example provider entries
+## Capability metadata and reasoning
 
-### Same-priority multi-key load balancing
-
-```json
-{
-  "id": "ollama",
-  "owned_by": "ollama-cloud",
-  "public_prefix": "ollama/",
-  "upstream_prefix": "",
-  "catalog_url": "https://ollama.com/v1/models",
-  "chat_endpoint": "https://ollama.com/v1/chat/completions",
-  "driver": "openai-compatible",
-  "env_vars": ["OLLAMA_CLOUD_KEY_1", "OLLAMA_CLOUD_KEY_2"],
-  "required_env_vars": ["OLLAMA_CLOUD_KEY_1"],
-  "instance_priority": 0,
-  "instance_weight": 1,
-  "fallback_models": ["glm-5.1"],
-  "allow_catalog_fallback": true,
-  "route_priority": 200
-}
-```
-
-If both keys are present, the renderer creates two instances with priority `0` and weight `1`, so requests can be distributed by `router_settings.algorithm`.
-
-### Lower-priority fallback provider
-
-```json
-{
-  "id": "xai",
-  "owned_by": "xai-official",
-  "public_prefix": "xai/",
-  "upstream_prefix": "",
-  "catalog_url": "https://api.x.ai/v1/models",
-  "chat_endpoint": "https://api.x.ai/v1/chat/completions",
-  "driver": "openai-compatible",
-  "env_vars": ["XAI_API_KEY"],
-  "required_env_vars": ["XAI_API_KEY"],
-  "instance_priority": 10,
-  "instance_weight": 1,
-  "fallback_models": ["grok-4.3"],
-  "allow_catalog_fallback": true,
-  "exclude_model_patterns": ["(?i)imagine|image|video"],
-  "route_priority": 100
-}
-```
-
-`instance_priority: 10` makes these instances lower priority than priority `0` instances if combined into a cross-provider pool in future configurations. In the current registry each public model has its own route and pool, but the field is kept explicit for reference and future extension.
+Reasoning support is model-centric. Providers such as Ollama or SiliconFlow may omit reasoning flags even when the underlying model supports reasoning. The renderer therefore does not treat absent provider-origin metadata as proof that reasoning is unsupported; it can reuse explicit local/model-centric metadata such as `deepseek/deepseek-v4-pro` or raw `deepseek-v4-pro` for matching origin/root IDs.
 
 ## Filtering catalog models
 
@@ -174,7 +189,6 @@ Regexes are Python regular expressions. `(?i)` makes a pattern case-insensitive.
 ## Validation commands
 
 ```bash
-cd /home/xz/apisix
 python3 -m py_compile scripts/render-routes.py
 ./scripts/configure-routes.sh
 ./scripts/verify.sh

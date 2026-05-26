@@ -114,6 +114,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--catalog-timeout", type=float, default=20.0)
+    parser.add_argument(
+        "--catalog-snapshot",
+        help="Optional JSON object {'providers': {provider_id: [upstream_model, ...]}}; avoids live catalog refetches.",
+    )
     return parser.parse_args()
 
 
@@ -394,8 +398,27 @@ def filter_models(provider: ProviderConfig, models: list[str]) -> list[str]:
     return filtered
 
 
-def catalog_models(provider: ProviderConfig, env: dict[str, str], timeout: float) -> list[str]:
+def load_catalog_snapshot(path: str | None) -> dict[str, list[str]]:
+    if not path:
+        return {}
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    providers = raw.get("providers") if isinstance(raw, dict) else None
+    if not isinstance(providers, dict):
+        raise SystemExit("catalog snapshot must contain a providers object")
+    snapshot: dict[str, list[str]] = {}
+    for provider_id, models in providers.items():
+        if not isinstance(provider_id, str) or not isinstance(models, list) or not all(
+            isinstance(model, str) and model for model in models
+        ):
+            raise SystemExit("catalog snapshot providers must map provider IDs to non-empty string model lists")
+        snapshot[provider_id] = models
+    return snapshot
+
+
+def catalog_models(provider: ProviderConfig, env: dict[str, str], timeout: float, snapshot: dict[str, list[str]]) -> list[str]:
     del env
+    if provider.id in snapshot:
+        return filter_models(provider, snapshot[provider.id])
     if provider.catalog_url is None:
         return filter_models(provider, provider.catalog_fallback_models)
     api_key = provider.credentials[0].value
@@ -424,11 +447,14 @@ def parse_origin_model_id(model_id: str) -> tuple[str, str] | None:
     return parts[0], parts[1]
 
 
-def expand_provider_models(providers: list[ProviderConfig], env: dict[str, str], timeout: float) -> list[ExpandedModel]:
+def expand_provider_models(
+    providers: list[ProviderConfig], env: dict[str, str], timeout: float, snapshot: dict[str, list[str]] | None = None
+) -> list[ExpandedModel]:
     expanded: list[ExpandedModel] = []
     seen_origin: set[str] = set()
+    snapshot = snapshot or {}
     for provider in providers:
-        upstream_models = catalog_models(provider, env, timeout)
+        upstream_models = catalog_models(provider, env, timeout, snapshot)
         if not upstream_models:
             raise SystemExit(f"provider {provider.id} produced no public models")
         for upstream in upstream_models:
@@ -853,7 +879,7 @@ def main() -> int:
     settings = normalize_router_settings(registry)
     providers = normalize_providers(registry, env)
     root_rules = normalize_root_rules(registry)
-    expanded = expand_provider_models(providers, env, args.catalog_timeout)
+    expanded = expand_provider_models(providers, env, args.catalog_timeout, load_catalog_snapshot(args.catalog_snapshot))
     root_routes = build_root_routes(root_rules, expanded)
     catalog = build_catalog(expanded, root_routes)
     routes = build_routes(expanded, root_routes, catalog, load_capabilities(capabilities_path), settings)

@@ -17,6 +17,7 @@ def run_renderer(
     env: dict[str, str] | None = None,
     capabilities: dict | None = None,
     write_capabilities: bool = True,
+    extra_args: list[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     registry_path = tmp_path / "model-pools.json"
     out_dir = tmp_path / "out"
@@ -29,17 +30,20 @@ def run_renderer(
     run_env = os.environ.copy()
     if env:
         run_env.update(env)
+    command = [
+        sys.executable,
+        str(SCRIPT),
+        "--registry",
+        str(registry_path),
+        "--out-dir",
+        str(out_dir),
+        "--manifest",
+        str(manifest),
+    ]
+    if extra_args:
+        command.extend(extra_args)
     return subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "--registry",
-            str(registry_path),
-            "--out-dir",
-            str(out_dir),
-            "--manifest",
-            str(manifest),
-        ],
+        command,
         cwd=ROOT,
         env=run_env,
         text=True,
@@ -114,6 +118,22 @@ def test_renderer_fails_when_provider_has_no_configured_api_key(tmp_path):
 
     assert result.returncode != 0
     assert "provider test has no configured API keys" in result.stderr
+
+
+def test_catalog_snapshot_avoids_live_provider_catalog_fetch(tmp_path):
+    snapshot = tmp_path / "catalog-snapshot.json"
+    snapshot.write_text(json.dumps({"providers": {"test": ["snapshot-model"]}}), encoding="utf-8")
+
+    result = run_renderer(
+        tmp_path,
+        registry_with(provider(catalog_url="https://example.invalid/v1/models")),
+        env={"TEST_API_KEY": "secret"},
+        extra_args=["--catalog-snapshot", str(snapshot)],
+    )
+
+    assert result.returncode == 0, result.stderr
+    routes = load_routes(tmp_path)
+    assert "origin/test/snapshot-model" in catalog_ids(routes)
 
 
 def test_renderer_fails_when_filter_removes_all_models(tmp_path):

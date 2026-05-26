@@ -43,16 +43,19 @@ Capability metadata is exposed through APISIX's own `GET /v1/model-capabilities`
 
 See `docs/model-pools.md` for the complete `conf/model-pools.json` field reference.
 
-To regenerate a merged capability registry from LiteLLM plus the local override file:
+To regenerate a checked-in merged capability registry from LiteLLM plus the local override file:
 
 ```bash
 ./scripts/build-model-capabilities.py \
   --base conf/model-capabilities.json \
   --output conf/model-capabilities.json
-./scripts/configure-routes.sh
 ```
 
 The raw LiteLLM JSON is an input to this build step, not a file checked into this repository and not a runtime dependency of the Hermes APISIX ProviderProfile.
+
+`./scripts/configure-routes.sh` performs the operational deployment pipeline. It loads `.env`, renders a temporary model catalog from provider catalogs, builds temporary capabilities from LiteLLM/OpenRouter plus that rendered catalog, re-renders from the same provider-catalog snapshot, and deploys those already-rendered route files through `scripts/deploy-routes.py`. This keeps the final applied route set aligned with the temporary capabilities generated during the same run. The pipeline depends on live provider catalogs and the upstream LiteLLM/OpenRouter metadata sources being reachable. Use `--catalog-timeout <seconds>` to adjust provider catalog fetch timeout for the render stages.
+
+`deploy-routes.py --rendered-dir ... --manifest ...` is primarily an internal handoff used by `configure-routes.sh` so deployment can apply a pre-rendered route set without fetching provider catalogs again.
 
 ## Secret files
 
@@ -100,6 +103,21 @@ docker compose up -d
 ./scripts/configure-routes.sh
 ./scripts/verify.sh
 ```
+
+## Operations: viewing logs
+
+APISIX is configured to write its access log to container stdout and its error log to container stderr (`conf/config.yaml`). The Compose file does not mount a host log directory, so use Docker logs for the local gateway and etcd:
+
+```bash
+docker compose logs -f apisix
+docker compose logs -f apisix-etcd
+
+# Equivalent container-name form:
+docker logs -f apisix-gateway
+docker logs -f apisix-etcd
+```
+
+Deployment and verification scripts, such as `./scripts/configure-routes.sh`, `./scripts/verify.sh`, and `./scripts/verify-integration.sh`, report their operational output to stdout/stderr in the terminal that runs them.
 
 ## Verify
 

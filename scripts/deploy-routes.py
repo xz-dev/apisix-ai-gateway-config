@@ -29,6 +29,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--admin-key-file", required=True, help="Path to APISIX Admin API key file")
     parser.add_argument("--admin-url", default="http://127.0.0.1:9180", help="APISIX Admin API base URL")
     parser.add_argument("--catalog-timeout", type=float, default=20.0)
+    parser.add_argument(
+        "--rendered-dir",
+        help="Use an existing rendered route directory instead of rendering live provider catalogs again",
+    )
+    parser.add_argument(
+        "--manifest",
+        help="Manifest JSON for --rendered-dir. Required when --rendered-dir is set.",
+    )
     return parser.parse_args()
 
 
@@ -110,18 +118,62 @@ def managed_route_ids(payload: dict[str, Any]) -> set[str]:
     return route_ids
 
 
+def validate_rendered_manifest(manifest: dict[str, Any], route_dir: Path) -> list[str]:
+    if manifest.get("managed_by") != MANAGED_BY:
+        raise SystemExit(f"render manifest must have managed_by={MANAGED_BY!r}")
+    model_count = manifest.get("model_count")
+    if type(model_count) is not int or model_count < 0:
+        raise SystemExit("render manifest model_count must be a non-negative integer")
+    route_ids = manifest.get("route_ids")
+    if not isinstance(route_ids, list) or not route_ids or not all(isinstance(route_id, str) and route_id for route_id in route_ids):
+        raise SystemExit("render manifest route_ids must be a non-empty list of strings")
+    desired_ids = [str(route_id) for route_id in route_ids]
+    if len(set(desired_ids)) != len(desired_ids):
+        raise SystemExit("render manifest route_ids must not contain duplicates")
+    for route_id in desired_ids:
+        route_path = route_dir / f"route-{route_id}.json"
+        if not route_path.is_file():
+            raise SystemExit(f"rendered route file missing: {route_path}")
+        route = json.loads(route_path.read_text(encoding="utf-8"))
+        if not isinstance(route, dict) or route.get("id") != route_id:
+            raise SystemExit(f"rendered route file id mismatch: {route_path}")
+    return desired_ids
+
+
+def load_rendered_routes(args: argparse.Namespace, tmpdir: Path) -> tuple[dict[str, Any], Path]:
+    rendered_dir = getattr(args, "rendered_dir", None)
+    manifest_arg = getattr(args, "manifest", None)
+    if rendered_dir:
+        if not manifest_arg:
+            raise SystemExit("--manifest is required when --rendered-dir is set")
+        route_dir = Path(rendered_dir)
+        manifest_path = Path(manifest_arg)
+        if not route_dir.is_dir():
+            raise SystemExit(f"rendered route directory does not exist: {route_dir}")
+        if not manifest_path.is_file():
+            raise SystemExit(f"render manifest does not exist: {manifest_path}")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            raise SystemExit(f"render manifest must contain a JSON object: {manifest_path}")
+        validate_rendered_manifest(manifest, route_dir)
+        return manifest, route_dir
+
+    manifest_path = tmpdir / "manifest.json"
+    manifest = render_routes(args, tmpdir, manifest_path)
+    return manifest, tmpdir
+
+
 def deploy(args: argparse.Namespace) -> None:
     admin_key = read_admin_key(Path(args.admin_key_file))
     admin_url = args.admin_url.rstrip("/")
 
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
-        manifest_path = tmpdir / "manifest.json"
-        manifest = render_routes(args, tmpdir, manifest_path)
-        desired_ids = [str(route_id) for route_id in manifest["route_ids"]]
+        manifest, route_dir = load_rendered_routes(args, tmpdir)
+        desired_ids = validate_rendered_manifest(manifest, route_dir)
 
         for route_id in desired_ids:
-            put_route(admin_url, admin_key, route_id, tmpdir / f"route-{route_id}.json")
+            put_route(admin_url, admin_key, route_id, route_dir / f"route-{route_id}.json")
 
         current = request_json(f"{admin_url}/apisix/admin/routes", admin_key=admin_key)
         stale_ids = sorted(managed_route_ids(current).difference(desired_ids))

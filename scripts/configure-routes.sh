@@ -31,6 +31,10 @@ while [ "$#" -gt 0 ]; do
       catalog_timeout="${1#*=}"
       shift
       ;;
+    --rendered-dir|--rendered-dir=*|--manifest|--manifest=*)
+      echo "$1 is managed internally by configure-routes.sh; call scripts/deploy-routes.py directly to deploy a pre-rendered route set" >&2
+      exit 1
+      ;;
     *)
       deploy_args+=("$1")
       shift
@@ -39,13 +43,14 @@ while [ "$#" -gt 0 ]; do
 done
 
 extract_public_catalog() {
-  python3 - "$1" "$2" <<'PY'
+  python3 - "$1" "$2" "$3" <<'PY'
 import json
 import pathlib
 import sys
 
 route_path = pathlib.Path(sys.argv[1])
 output_path = pathlib.Path(sys.argv[2])
+snapshot_path = pathlib.Path(sys.argv[3])
 route = json.loads(route_path.read_text(encoding="utf-8"))
 response_example = (((route.get("plugins") or {}).get("mocking") or {}).get("response_example"))
 if not isinstance(response_example, str):
@@ -54,18 +59,33 @@ payload = json.loads(response_example)
 data = payload.get("data")
 if not isinstance(data, list):
     raise SystemExit("failed to extract temporary catalog: expected data[]")
+providers = {}
+for item in data:
+    model_id = item.get("id") if isinstance(item, dict) else None
+    if not isinstance(model_id, str) or not model_id.startswith("origin/"):
+        continue
+    rest = model_id[len("origin/"):]
+    provider_id, sep, upstream_model = rest.partition("/")
+    if sep and provider_id and upstream_model:
+        providers.setdefault(provider_id, []).append(upstream_model)
 output_path.write_text(json.dumps({"data": data}, ensure_ascii=False), encoding="utf-8")
+snapshot_path.write_text(json.dumps({"providers": providers}, ensure_ascii=False), encoding="utf-8")
 PY
 }
 
 deploy_routes() {
   local capabilities_path=$1
-  shift
+  local rendered_dir=$2
+  local manifest_path=$3
+  shift 3
   python3 "$ROOT/scripts/deploy-routes.py" \
     --registry "$ROOT/conf/model-pools.json" \
     --capabilities "$capabilities_path" \
     --admin-key-file "$ROOT/conf/admin.key" \
     --admin-url "http://127.0.0.1:9180" \
+    --catalog-timeout "$catalog_timeout" \
+    --rendered-dir "$rendered_dir" \
+    --manifest "$manifest_path" \
     "$@"
 }
 
@@ -73,12 +93,18 @@ render_routes() {
   local out_dir=$1
   local manifest_path=$2
   local capabilities_path=$3
-  python3 "$ROOT/scripts/render-routes.py" \
-    --registry "$ROOT/conf/model-pools.json" \
-    --capabilities "$capabilities_path" \
-    --out-dir "$out_dir" \
-    --manifest "$manifest_path" \
+  local catalog_snapshot=${4:-}
+  local args=(
+    --registry "$ROOT/conf/model-pools.json"
+    --capabilities "$capabilities_path"
+    --out-dir "$out_dir"
+    --manifest "$manifest_path"
     --catalog-timeout "$catalog_timeout"
+  )
+  if [ -n "$catalog_snapshot" ]; then
+    args+=(--catalog-snapshot "$catalog_snapshot")
+  fi
+  python3 "$ROOT/scripts/render-routes.py" "${args[@]}"
 }
 
 build_capabilities() {
@@ -99,10 +125,11 @@ preflight_manifest="$preflight_out/manifest.json"
 render_routes "$preflight_out" "$preflight_manifest" "$ROOT/conf/model-capabilities.json"
 
 model_catalog="$tmpdir/public-catalog.json"
-extract_public_catalog "$preflight_out/route-main-models.json" "$model_catalog"
+catalog_snapshot="$tmpdir/catalog-snapshot.json"
+extract_public_catalog "$preflight_out/route-main-models.json" "$model_catalog" "$catalog_snapshot"
 
 desired_capabilities="$tmpdir/model-capabilities.json"
 build_capabilities "$desired_capabilities" "$model_catalog"
 
-render_routes "$preflight_out" "$preflight_manifest" "$desired_capabilities"
-deploy_routes "$desired_capabilities" "${deploy_args[@]}"
+render_routes "$preflight_out" "$preflight_manifest" "$desired_capabilities" "$catalog_snapshot"
+deploy_routes "$desired_capabilities" "$preflight_out" "$preflight_manifest" "${deploy_args[@]}"
